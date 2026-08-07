@@ -1,8 +1,7 @@
 import { QueryClient } from '@tanstack/react-query';
 
 /**
- * Singleton QueryClient instance configured with production-ready defaults
- * as mandated by TanStack Query v5 rules in GEMINI.md.
+ * Singleton QueryClient instance configured with production-ready defaults.
  */
 export const queryClient = new QueryClient({
   defaultOptions: {

@@ -47,14 +47,13 @@ lerna-debug.log*
 coverage/
 .nyc_output/
 
-# AI agent tooling & internal governance docs (not part of the published project)
+# AI agent tooling & local editor state (not part of the published project)
+# Note: CLAUDE.md files ARE tracked — they document the project for humans and
+# agents alike. Only local tool state and internal drafts are excluded.
 .agents/
 .claude/
 .cursor/
 .aider*
-CLAUDE.md
-GEMINI.md
-**/GEMINI.md
 DESIGN.md
 **/DESIGN.md
 

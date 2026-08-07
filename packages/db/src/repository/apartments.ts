@@ -89,8 +89,7 @@ export async function updateApartmentEnrichment(
 }
 
 /**
- * Idempotently creates or updates an apartment listing based on URL unique constraint,
- * as mandated by GEMINI.md Section 5 repository query patterns.
+ * Idempotently creates or updates an apartment listing based on the URL unique constraint.
  */
 export async function upsertScrapedApartment(data: NewApartment): Promise<Apartment> {
   const [apartment] = await db

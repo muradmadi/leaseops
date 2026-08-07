@@ -11,7 +11,8 @@ build/
 .env*
 !.env.example
 README.md
-GEMINI.md
+CLAUDE.md
+**/CLAUDE.md
 DESIGN.md
 .agents/
 .vscode/
