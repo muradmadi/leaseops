@@ -1,0 +1,1 @@
+ALTER TABLE `apartments` ADD `raw_html` text;

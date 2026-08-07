@@ -1,0 +1,64 @@
+# Dependencies
+node_modules/
+.bun/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+.output/
+.vercel/
+.next/
+.turbo/
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.template
+
+# SQLite database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+local_leaseops.db*
+dev_leasops.db*
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# OS & Editor files
+.DS_Store
+*.swp
+*.swo
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+
+# Testing
+coverage/
+.nyc_output/
+
+# AI agent tooling & internal governance docs (not part of the published project)
+.agents/
+.claude/
+.cursor/
+.aider*
+CLAUDE.md
+GEMINI.md
+**/GEMINI.md
+DESIGN.md
+**/DESIGN.md
+
+# Local scratch
+tmp/
+scratch/
+*.tmp.ts

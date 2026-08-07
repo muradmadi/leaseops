@@ -1,0 +1,26 @@
+services:
+  leaseops:
+    image: oven/bun:1.3.14-alpine
+    container_name: leaseops-monorepo
+    working_dir: /app
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - leaseops_data:/app/data
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=/app/data/local_leaseops.db
+      - PORT=3000
+      - AUTH_USERNAME=${AUTH_USERNAME:-admin}
+      - AUTH_PASSWORD=${AUTH_PASSWORD:-leaseops}
+    ports:
+      - "3000:3000"   # Backend API
+      - "5173:5173"   # Frontend Web Dev
+    command: ["bun", "run", "dev"]
+    restart: unless-stopped
+
+volumes:
+  leaseops_data:
+    driver: local

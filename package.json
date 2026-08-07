@@ -1,0 +1,25 @@
+{
+  "name": "@leaseops/root",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "bun run --filter '!@leaseops/root' dev",
+    "build": "bun run --filter '!@leaseops/root' build",
+    "test": "bun test",
+    "typecheck": "bun run --filter '!@leaseops/root' typecheck",
+    "db:generate": "bun run --filter @leaseops/db generate",
+    "db:migrate": "bun run --filter @leaseops/db migrate",
+    "db:studio": "bun run --filter @leaseops/db studio"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

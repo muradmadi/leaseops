@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+@theme {
+  /* Obsidian Dark Mode Core Palette */
+  --color-zinc-950: #09090b; /* Primary App Background */
+  --color-zinc-900: #18181b; /* Card & Container Background */
+  --color-zinc-800: #27272a; /* Borders & Secondary Elements */
+  --color-zinc-700: #3f3f46; /* Subtle Dividers */
+  --color-zinc-400: #a1a1aa; /* Muted Text & Disqualified Leads */
+  --color-zinc-100: #f4f4f5; /* Primary High-Contrast Text */
+  
+  /* Semantic Pipeline Accent Colors */
+  --color-emerald-500: #10b981; /* Greenlit / MQL Leads & AI Message Ready */
+  --color-emerald-600: #059669;
+  --color-amber-500: #f59e0b;   /* Active Negotiations & Landlord Replied */
+  --color-amber-600: #d97706;
+  --color-blue-500: #3b82f6;    /* Primary Interactive Buttons & FABs */
+  --color-blue-600: #2563eb;    /* User Chat Bubbles */
+  
+  /* Tap Target Ergonomics */
+  --spacing-tap: 2.75rem; /* 44px minimum tap target for PWA mobile compliance */
+}
+
+@layer base {
+  * {
+    border-color: var(--color-zinc-800);
+  }
+  
+  body {
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background-color: var(--color-zinc-950);
+    color: var(--color-zinc-100);
+    overflow-x: hidden;
+    min-height: 100vh;
+  }
+
+  /* Smooth customized scrollbars for dark mode */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-zinc-950);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-zinc-800);
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-zinc-700);
+  }
+}
