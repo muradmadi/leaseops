@@ -11,9 +11,9 @@ build/
 .env*
 !.env.example
 README.md
+ROADMAP.md
 CLAUDE.md
 **/CLAUDE.md
-DESIGN.md
 .agents/
 .vscode/
 .idea/

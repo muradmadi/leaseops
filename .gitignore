@@ -49,13 +49,11 @@ coverage/
 
 # AI agent tooling & local editor state (not part of the published project)
 # Note: CLAUDE.md files ARE tracked — they document the project for humans and
-# agents alike. Only local tool state and internal drafts are excluded.
+# agents alike. Only local tool state is excluded.
 .agents/
 .claude/
 .cursor/
 .aider*
-DESIGN.md
-**/DESIGN.md
 
 # Local scratch
 tmp/

@@ -23,6 +23,11 @@ Redux/Zustand/Context store, and none should be added for server state.
 
 ## Design system — Obsidian Dark
 
+**Intent:** the precision of an enterprise CRM (Linear, Salesforce) crossed with
+the tactile ergonomics of a native iOS app. Clinical, not playful — this screen
+is where someone decides where they will live. Dense information, calm surfaces,
+colour reserved for meaning rather than decoration.
+
 Dark mode only. Use Tailwind tokens, never hardcoded hex or inline `style`:
 
 | Token | Meaning |
@@ -40,6 +45,18 @@ This is a phone-first app used while standing outside a building.
 
 Inputs must use `text-[16px]` at mobile breakpoints — anything smaller makes iOS
 Safari zoom on focus.
+
+### Mobile checklist
+
+Verify before considering a view done:
+
+- [ ] No horizontal overflow at a **360px** viewport. Horizontal carousels use
+      `overflow-x-auto snap-x snap-mandatory` with the scrollbar hidden.
+- [ ] Icon buttons, toggles, and slider thumbs measure ≥44×44px as rendered —
+      check the bounding rect, not just the icon size.
+- [ ] Critical navigation stays reachable during long scrolls (sticky header).
+- [ ] Every clickable surface has hover **and** active feedback:
+      `hover:border-zinc-700 active:scale-[0.98] transition-all duration-150`.
 
 ## Data fetching
 
