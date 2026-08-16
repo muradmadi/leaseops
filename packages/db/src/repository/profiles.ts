@@ -3,24 +3,21 @@ import { db } from '../client';
 import { userProfiles, type UserProfile, type NewUserProfile } from '../schema/profiles';
 
 /**
- * Retrieves a user onboarding profile by their unique username.
+ * Retrieves the search criteria for a household. There is at most one profile per
+ * household — both partners read and write the same row.
+ *
+ * This replaced a `findFirstProfile()` helper that returned whichever profile the
+ * database happened to hand back first. That was harmless while LeaseOps had one
+ * user and actively wrong with two: a background scoring job could score a listing
+ * against a different household's budget ceiling.
  */
-export async function findProfileByUsername(username: string): Promise<UserProfile | undefined> {
-  const [profile] = await db.select().from(userProfiles).where(eq(userProfiles.username, username));
+export async function findProfileByHouseholdId(householdId: string): Promise<UserProfile | undefined> {
+  const [profile] = await db.select().from(userProfiles).where(eq(userProfiles.householdId, householdId));
   return profile;
 }
 
 /**
- * Retrieves the first available user onboarding profile (useful for self-hosted RevOps background tasks).
- */
-export async function findFirstProfile(): Promise<UserProfile | undefined> {
-  const [profile] = await db.select().from(userProfiles).limit(1);
-  return profile;
-}
-
-
-/**
- * Idempotently creates or updates a user onboarding profile based on the unique username constraint.
+ * Idempotently creates or updates a household's onboarding profile.
  */
 export async function upsertProfile(data: NewUserProfile): Promise<UserProfile> {
   const now = new Date();
@@ -28,16 +25,17 @@ export async function upsertProfile(data: NewUserProfile): Promise<UserProfile> 
     .insert(userProfiles)
     .values({ ...data, updatedAt: now })
     .onConflictDoUpdate({
-      target: userProfiles.username,
+      target: userProfiles.householdId,
       set: {
         targetLocation: data.targetLocation,
         targetLanguage: data.targetLanguage,
-        autoTranslateListings: data.autoTranslateListings,
         autoDraftMessages: data.autoDraftMessages,
         currency: data.currency,
         idealRent: data.idealRent,
         maxRent: data.maxRent,
+        qualifyingThreshold: data.qualifyingThreshold,
         featureWeights: data.featureWeights,
+        spaceRequirements: data.spaceRequirements,
         tenantPersona: data.tenantPersona,
         updatedAt: now,
       },
@@ -48,9 +46,12 @@ export async function upsertProfile(data: NewUserProfile): Promise<UserProfile> 
 }
 
 /**
- * Deletes a user profile by username, returning the deleted record.
+ * Deletes a household's profile, returning the deleted record.
  */
-export async function removeProfileByUsername(username: string): Promise<UserProfile | undefined> {
-  const [deleted] = await db.delete(userProfiles).where(eq(userProfiles.username, username)).returning();
+export async function removeProfileByHouseholdId(householdId: string): Promise<UserProfile | undefined> {
+  const [deleted] = await db
+    .delete(userProfiles)
+    .where(eq(userProfiles.householdId, householdId))
+    .returning();
   return deleted;
 }

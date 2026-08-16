@@ -1,0 +1,1 @@
+ALTER TABLE `user_profiles` ADD `sign_off_name` text DEFAULT '' NOT NULL;

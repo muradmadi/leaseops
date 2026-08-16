@@ -1,0 +1,1 @@
+ALTER TABLE `apartments` ADD `pipeline_stage` text DEFAULT 'NOT_CONTACTED' NOT NULL;

@@ -1,0 +1,1 @@
+ALTER TABLE `user_profiles` DROP COLUMN `sign_off_name`;

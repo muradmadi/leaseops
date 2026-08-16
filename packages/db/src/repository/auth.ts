@@ -1,4 +1,4 @@
-import { eq, gt } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db } from '../client';
 import { userSessions, type UserSession, type NewUserSession } from '../schema/auth';
 
@@ -40,8 +40,8 @@ export async function removeSessionByToken(token: string): Promise<UserSession |
 }
 
 /**
- * Deletes all active sessions for a given username.
+ * Deletes all active sessions for a user — every device gets logged out.
  */
-export async function removeAllSessionsForUser(username: string): Promise<UserSession[]> {
-  return db.delete(userSessions).where(eq(userSessions.username, username)).returning();
+export async function removeAllSessionsForUser(userId: string): Promise<UserSession[]> {
+  return db.delete(userSessions).where(eq(userSessions.userId, userId)).returning();
 }

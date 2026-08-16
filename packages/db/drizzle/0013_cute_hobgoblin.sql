@@ -1,0 +1,1 @@
+ALTER TABLE `apartments` DROP COLUMN `raw_html`;

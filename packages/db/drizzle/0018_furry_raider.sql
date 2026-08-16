@@ -1,0 +1,1 @@
+ALTER TABLE `apartments` ADD `set_aside_reason` text;

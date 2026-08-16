@@ -26,7 +26,7 @@ if (!globalForDb.migrated && Bun.env.NODE_ENV !== 'production') {
     const migrationsFolder = resolve(import.meta.dir, '../drizzle');
     migrate(db, { migrationsFolder });
     globalForDb.migrated = true;
-  } catch (e) {
+  } catch (_e) {
     // Suppress if migrations folder doesn't exist yet during early setup
   }
 }
