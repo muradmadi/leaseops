@@ -141,8 +141,19 @@ if (Bun.env.ANTHROPIC_API_KEY?.trim()) {
   );
 }
 
-if (isProduction && Bun.env.ALLOW_SIGNUP !== 'true') {
-  console.log('🔒 Sign-up is closed (ALLOW_SIGNUP is not "true"). Existing accounts can still log in.');
+// Describes the policy rather than asserting a state. An earlier version said
+// "sign-up is closed", which was wrong twice over: joining a household with its
+// code is never gated, and with ALLOW_SIGNUP unset a still-empty instance is in
+// fact open for its first account.
+if (isProduction) {
+  const policy =
+    Bun.env.ALLOW_SIGNUP === 'true'
+      ? 'anyone can start a new household (ALLOW_SIGNUP=true)'
+      : Bun.env.ALLOW_SIGNUP === 'false'
+        ? 'nobody can start a new household (ALLOW_SIGNUP=false)'
+        : 'a new household can be started only while this instance has no accounts';
+  console.log(`🔒 New households: ${policy}.`);
+  console.log('👋 Joining an existing household with its code is always allowed.');
 }
 
 export default {
