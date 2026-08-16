@@ -3,29 +3,48 @@ import { streamSSE } from 'hono/streaming';
 import { zValidator } from '@hono/zod-validator';
 import {
   listApartments,
-  findApartmentById,
+  findApartmentForHousehold,
   createApartment,
   updateApartmentStatus,
   updateApartmentRatings,
   removeApartment,
   createApartmentApiSchema,
+  updateApartmentApiSchema,
   updateApartmentStatusApiSchema,
+  setApartmentActiveApiSchema,
+  setApartmentStageApiSchema,
+  setApartmentAsideApiSchema,
+  setApartmentActive,
+  setApartmentStage,
+  setApartmentAside,
+  archiveApartment,
+  restoreApartment,
+  listArchivedApartments,
   updateApartmentRatingsApiSchema,
   listApartmentsQuerySchema,
-  findProfileByUsername,
-  findFirstProfile,
+  findProfileByHouseholdId,
   updateApartmentEnrichment,
   findMessagesByApartmentId,
   createMessage,
   updateMessage,
   removeMessage,
 } from '@leaseops/db';
-import { processListingAsync, DEFAULT_TITLE } from '../services/scraper';
-import { calculateMcdaScore, type FeatureEvaluation } from '../services/mcda';
-import { buildFeatureEvaluations } from '../services/features';
-import { enrichQualifiedLead, resolvePersona } from '../services/qualification';
+import { processListingAsync, buildListingFromInput, DEFAULT_TITLE } from '../services/scraper';
 import {
-  generateAiReview,
+  calculateMcdaScore,
+  deriveHighlights,
+  DEFAULT_QUALIFYING_THRESHOLD,
+  type FeatureEvaluation,
+} from '../services/mcda';
+import {
+  buildFeatureEvaluations,
+  buildSpaceEvaluations,
+  buildRoomQualityEvaluation,
+  featureDisplayName,
+} from '../services/features';
+import { enrichQualifiedLead, resolveHouseholdPersona } from '../services/qualification';
+import {
+  analyseListing,
   draftOutreachMessage,
   suggestChatReply,
   generateCompromiseSummary,
@@ -33,8 +52,11 @@ import {
 import { globalEvents } from '../services/events';
 import { z } from 'zod';
 
-type Env = { Variables: { user?: { username: string } } };
-const app = new Hono<Env>();
+import type { AuthEnv } from '../services/auth';
+
+// requireAuth is mounted on /api/apartments* in index.ts, so `householdId` is
+// always set by the time any handler here runs.
+const app = new Hono<AuthEnv>();
 
 /** Heartbeat cadence for the SSE stream, well inside the server idle timeout. */
 const SSE_HEARTBEAT_MS = 15_000;
@@ -81,57 +103,17 @@ app.get(
   zValidator('query', listApartmentsQuerySchema),
   async (c) => {
     const { status } = c.req.valid('query');
-    const results = await listApartments(status);
+    const results = await listApartments(c.get('householdId'), status);
     return c.json(results, 200);
   }
 );
 
 /**
- * GET /api/apartments/proxy-image?url=...
- * Proxies remote listing images with proper User-Agent headers to bypass CORS and Referer restrictions.
+ * GET /api/apartments/archived
+ * The archive, surfaced in Settings rather than on the dashboard.
  */
-app.get('/proxy-image', async (c) => {
-  const url = c.req.query('url');
-  if (!url) {
-    return c.json({ message: 'Missing url parameter', statusCode: 400 }, 400);
-  }
-  try {
-    const urlObj = new URL(url);
-    if (!['http:', 'https:'].includes(urlObj.protocol)) {
-      return c.json({ message: 'Invalid protocol', statusCode: 400 }, 400);
-    }
-    const hostname = urlObj.hostname;
-    // Basic SSRF protection (prevent local network access)
-    if (
-      hostname === 'localhost' ||
-      hostname.startsWith('127.') ||
-      hostname.startsWith('192.168.') ||
-      hostname.startsWith('10.') ||
-      hostname.endsWith('.local')
-    ) {
-      return c.json({ message: 'Internal domains are not allowed', statusCode: 403 }, 403);
-    }
-
-    const res = await fetch(urlObj.toString(), {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-      },
-    });
-    if (!res.ok) {
-      return c.json({ message: `Failed to fetch remote image (${res.status})`, statusCode: 502 }, 502);
-    }
-    const contentType = res.headers.get('content-type') || 'image/jpeg';
-    const buffer = await res.arrayBuffer();
-    return new Response(buffer, {
-      headers: {
-        'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=86400',
-      },
-    });
-  } catch (err: any) {
-    return c.json({ message: err.message || 'Image proxy error', statusCode: 500 }, 500);
-  }
+app.get('/archived', async (c) => {
+  return c.json(await listArchivedApartments(c.get('householdId')), 200);
 });
 
 /**
@@ -140,7 +122,7 @@ app.get('/proxy-image', async (c) => {
  */
 app.get('/:id', async (c) => {
   const id = c.req.param('id');
-  const apartment = await findApartmentById(id);
+  const apartment = await findApartmentForHousehold(id, c.get('householdId'));
 
   if (!apartment) {
     return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
@@ -150,12 +132,93 @@ app.get('/:id', async (c) => {
 });
 
 /**
+ * PATCH /api/apartments/:id/active
+ *
+ * Marks a listing as being pursued, or stops pursuing it.
+ *
+ * Activating is how you chase a flat that fell short: the pipeline withholds the
+ * AI review and outreach draft from anything that did not qualify, so activation
+ * releases that spend. It deliberately does **not** change `status` — the score is
+ * a measurement and the user overriding it does not make the listing qualify, so
+ * it stays in the bucket its score put it in, now flagged as active.
+ */
+/**
+ * PATCH /:id/set-aside
+ * Pulls a qualifying listing out of the green zone with a written reason, or
+ * clears that override with `reason: null`.
+ *
+ * The score is not rewritten. A listing that scored 78% and smelled of damp is
+ * both of those things, and collapsing them into one number loses the half you
+ * cannot recompute.
+ */
+app.patch('/:id/set-aside', zValidator('json', setApartmentAsideApiSchema), async (c) => {
+  const id = c.req.param('id');
+  const householdId = c.get('householdId');
+  const { reason } = c.req.valid('json');
+
+  const apartment = await findApartmentForHousehold(id, householdId);
+  if (!apartment) {
+    return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
+  }
+
+  const updated = await setApartmentAside(id, reason);
+  globalEvents.emit('apartmentUpdated', { id });
+  return c.json(updated, 200);
+});
+
+/**
+ * PATCH /:id/stage
+ * Moves the listing along the outreach pipeline. Deliberately separate from
+ * `/active` and from the score: choosing to chase a flat, how well it scored,
+ * and how far the conversation got are three different questions.
+ */
+app.patch('/:id/stage', zValidator('json', setApartmentStageApiSchema), async (c) => {
+  const id = c.req.param('id');
+  const householdId = c.get('householdId');
+  const { pipelineStage } = c.req.valid('json');
+
+  const apartment = await findApartmentForHousehold(id, householdId);
+  if (!apartment) {
+    return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
+  }
+
+  const updated = await setApartmentStage(id, pipelineStage);
+  globalEvents.emit('apartmentUpdated', { id, pipelineStage });
+  return c.json(updated, 200);
+});
+
+app.patch('/:id/active', zValidator('json', setApartmentActiveApiSchema), async (c) => {
+  const id = c.req.param('id');
+  const householdId = c.get('householdId');
+  const { isActive } = c.req.valid('json');
+
+  const apartment = await findApartmentForHousehold(id, householdId);
+  if (!apartment) {
+    return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
+  }
+
+  const updated = await setApartmentActive(id, isActive);
+  const userProfile = await findProfileByHouseholdId(householdId);
+
+  if (isActive) {
+    // Not awaited: generating a review and an outreach draft is several seconds of
+    // LLM time and the dashboard picks the result up over SSE.
+    Promise.resolve()
+      .then(() => enrichQualifiedLead(id, userProfile, { requireQualified: false }))
+      .catch((err) => console.error(`[Activate] Enrichment failed for ${id}:`, err));
+  }
+
+  globalEvents.emit('apartmentUpdated', { id, isActive });
+  return c.json(updated, 200);
+});
+
+/**
  * POST /api/apartments/:id/ai-review
  * Generates or retrieves DeepSeek AI pros/cons analysis for an apartment.
  */
 app.post('/:id/ai-review', async (c) => {
   const id = c.req.param('id');
-  const apartment = await findApartmentById(id);
+  const apartment = await findApartmentForHousehold(id, c.get('householdId'));
   if (!apartment) {
     return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
   }
@@ -165,13 +228,12 @@ app.post('/:id/ai-review', async (c) => {
     return c.json(ext.aiReview, 200);
   }
 
-  const user = c.get('user');
-  const userProfile = user?.username ? await findProfileByUsername(user.username) : await findFirstProfile();
+  const userProfile = await findProfileByHouseholdId(c.get('householdId'));
 
-  const aiReview = await generateAiReview(
+  const aiReview = await analyseListing(
     apartment.title || ext.title || 'Property',
     apartment.price || ext.price?.amount || 0,
-    ext.description || apartment.rawHtml?.slice(0, 5000),
+    ext.description || '',
     ext,
     userProfile,
     apartment.featureScores
@@ -189,7 +251,7 @@ app.post('/:id/ai-review', async (c) => {
  */
 app.get('/:id/ai-review', async (c) => {
   const id = c.req.param('id');
-  const apartment = await findApartmentById(id);
+  const apartment = await findApartmentForHousehold(id, c.get('householdId'));
   if (!apartment) {
     return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
   }
@@ -214,33 +276,40 @@ app.post(
     const data = c.req.valid('json');
     const now = new Date();
     const id = crypto.randomUUID();
+    const householdId = c.get('householdId');
 
-    const newRecord = {
+    const listing = buildListingFromInput({
+      title: data.title.trim() || DEFAULT_TITLE,
+      description: data.description,
+      price: data.price,
+      currency: data.currency,
+      floorSizeSqm: data.floorSizeSqm,
+      totalRooms: data.totalRooms,
+      bathrooms: data.bathrooms,
+      floorLevel: data.floorLevel,
+      neighborhood: data.neighborhood,
+      city: data.city,
+    });
+
+    const created = await createApartment({
       id,
-      url: data.url,
-      title: data.title?.trim() || DEFAULT_TITLE,
-      price: data.price || 0,
+      householdId,
+      // A listing entered by hand may have no link at all; the row still needs a
+      // unique value for the per-household URL index.
+      url: data.url?.trim() || `manual:${id}`,
+      title: listing.title,
+      price: data.price,
       currency: data.currency || 'EUR',
       status: 'UNPROCESSED' as const,
       roomScores: data.roomScores,
+      extractedData: listing,
       createdAt: now,
       updatedAt: now,
-    };
+    });
 
-    const user = c.get('user');
-    const created = await createApartment(newRecord);
-
-    // Trigger background scraping without blocking HTTP request thread
+    // Scoring is instant but the LLM work is not, so the response does not wait.
     Promise.resolve().then(() => {
-      processListingAsync(
-        created.id,
-        created.url,
-        user?.username,
-        data.featureRatings,
-        data.roomScores,
-        created.price,
-        created.title
-      ).catch((err) => {
+      processListingAsync(created.id, householdId, listing, data.featureRatings, data.roomScores).catch((err) => {
         console.error(`[Background Task Error] ${created.id}:`, err);
       });
     });
@@ -248,6 +317,65 @@ app.post(
     return c.json(created, 202);
   }
 );
+
+/**
+ * PATCH /api/apartments/:id
+ * Edits a listing in full — every detail and every rating — and re-scores it.
+ *
+ * A viewing is the point at which the advert stops being the best information
+ * you have, so anything on the record has to be correctable: the size was
+ * overstated, the rent excluded bills, the bathroom was not what the photo
+ * showed. The score is recomputed from the corrected figures and is expected to
+ * move, sometimes a long way.
+ *
+ * Deliberately does **not** re-run the AI review. That reads the description and
+ * costs a call, so it is released on demand by Activate rather than spent on
+ * every typo fix. Scoring itself is free arithmetic and always runs.
+ */
+app.patch('/:id', zValidator('json', updateApartmentApiSchema), async (c) => {
+  const id = c.req.param('id');
+  const householdId = c.get('householdId');
+  const data = c.req.valid('json');
+
+  const existing = await findApartmentForHousehold(id, householdId);
+  if (!existing) {
+    return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
+  }
+
+  const listing = buildListingFromInput({
+    title: data.title.trim() || DEFAULT_TITLE,
+    description: data.description,
+    price: data.price,
+    currency: data.currency,
+    floorSizeSqm: data.floorSizeSqm,
+    totalRooms: data.totalRooms,
+    bathrooms: data.bathrooms,
+    floorLevel: data.floorLevel,
+    neighborhood: data.neighborhood,
+    city: data.city,
+  });
+
+  // The AI review belongs to the listing, not to this edit — carry it over so a
+  // correction does not silently wipe a review you already paid for.
+  const previous = (existing.extractedData || {}) as any;
+  if (previous.aiReview) listing.aiReview = previous.aiReview;
+
+  await updateApartmentEnrichment(id, {
+    url: data.url?.trim() || existing.url,
+    title: listing.title,
+    price: data.price,
+    currency: data.currency || existing.currency,
+    roomScores: data.roomScores,
+    extractedData: listing,
+  });
+
+  // Re-score through the same path ingestion uses, so an edited listing and a
+  // new one can never be scored by two different implementations.
+  await processListingAsync(id, householdId, listing, data.featureRatings, data.roomScores);
+
+  const updated = await findApartmentForHousehold(id, householdId);
+  return c.json(updated, 200);
+});
 
 /**
  * PATCH /api/apartments/:id/status
@@ -259,6 +387,14 @@ app.patch(
   async (c) => {
     const id = c.req.param('id');
     const { status } = c.req.valid('json');
+
+    // Ownership first: without this, any signed-in household could rewrite the
+    // status of another household's listing by guessing a UUID. A miss must be
+    // indistinguishable from "does not exist".
+    const existing = await findApartmentForHousehold(id, c.get('householdId'));
+    if (!existing) {
+      return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
+    }
 
     const updated = await updateApartmentStatus(id, status);
 
@@ -282,13 +418,12 @@ app.patch(
     const id = c.req.param('id');
     const { featureRatings, roomScores } = c.req.valid('json');
 
-    const existing = await findApartmentById(id);
+    const existing = await findApartmentForHousehold(id, c.get('householdId'));
     if (!existing) {
       return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
     }
 
-    const user = c.get('user');
-    const userProfile = user?.username ? await findProfileByUsername(user.username) : await findFirstProfile();
+    const userProfile = await findProfileByHouseholdId(c.get('householdId'));
 
     const oldScores = (existing.featureScores || {}) as any;
     let evaluations = (oldScores.evaluations || []) as FeatureEvaluation[];
@@ -299,12 +434,15 @@ app.patch(
       evaluations = buildFeatureEvaluations({
         featureWeights: userProfile?.featureWeights as Record<string, unknown> | undefined,
         featureRatings,
-        extractedData: existing.extractedData,
       });
     }
 
-    // Update ratings for evaluated features
-    const updatedEvaluations = evaluations.map((evalItem) => {
+    // Apply the new ratings. A rating for a feature that was never in the
+    // evaluation set used to be dropped on the floor by this map — you could rate
+    // three things after a viewing, see no error, and have two silently ignored
+    // because they had been weighted below the scoring threshold. Rating something
+    // explicitly is itself a statement that it matters, so it now joins the set.
+    const updatedEvaluations: FeatureEvaluation[] = evaluations.map((evalItem) => {
       if (featureRatings && featureRatings[evalItem.featureId] !== undefined) {
         return {
           ...evalItem,
@@ -315,9 +453,45 @@ app.patch(
       return evalItem;
     });
 
+    // Derived criteria are recomputed rather than carried over: the room scores may
+    // have just changed, and stale size ratings would contradict the listing.
+    const derivedIds = new Set(['__floorArea', '__bedrooms', '__bathrooms', '__roomQuality']);
+    for (let i = updatedEvaluations.length - 1; i >= 0; i--) {
+      if (derivedIds.has(updatedEvaluations[i]!.featureId)) updatedEvaluations.splice(i, 1);
+    }
+    updatedEvaluations.push(
+      ...buildSpaceEvaluations(userProfile?.spaceRequirements as any, (existing.extractedData as any)?.unitMetrics)
+    );
+    const newRoomQuality = buildRoomQualityEvaluation(
+      (roomScores as Record<string, number>) || (existing.roomScores as Record<string, number>)
+    );
+    if (newRoomQuality) updatedEvaluations.push(newRoomQuality);
+
+    if (featureRatings) {
+      const weights = (userProfile?.featureWeights || {}) as Record<string, unknown>;
+      for (const [featureId, rawRating] of Object.entries(featureRatings)) {
+        if (updatedEvaluations.some((e) => e.featureId === featureId)) continue;
+        const rating = Number(rawRating);
+        if (!Number.isFinite(rating)) continue;
+
+        const rawWeight = weights[featureId];
+        const weight = rawWeight === undefined || rawWeight === null ? 3 : Number(rawWeight);
+        if (!Number.isFinite(weight)) continue;
+
+        updatedEvaluations.push({
+          featureId,
+          name: featureDisplayName(featureId),
+          weight,
+          rating: Math.max(0, Math.min(5, rating)),
+          notes: `Rated ${rating}/5 post-viewing.`,
+        });
+      }
+    }
+
     const profile = {
-      qualifyingThreshold: 70,
+      qualifyingThreshold: userProfile?.qualifyingThreshold ?? DEFAULT_QUALIFYING_THRESHOLD,
       budgetCeiling: userProfile?.maxRent || 1500,
+      idealRent: userProfile?.idealRent,
     };
 
     const newResult = calculateMcdaScore(updatedEvaluations, existing.price, profile);
@@ -332,7 +506,7 @@ app.patch(
         compromise = await generateCompromiseSummary(
           existing.title || ext.title || 'This property',
           existing.price,
-          ext.description || existing.rawHtml?.slice(0, 5000) || '',
+          ext.description || '',
           { evaluations: updatedEvaluations, result: newResult, budgetCeiling: profile.budgetCeiling }
         );
       } catch (err: any) {
@@ -347,6 +521,11 @@ app.patch(
         ...oldScores,
         evaluations: updatedEvaluations,
         result: newResult,
+        highlights: deriveHighlights(updatedEvaluations, newResult, {
+          price: existing.price,
+          budgetCeiling: profile.budgetCeiling,
+          idealRent: profile.idealRent,
+        }),
         compromise,
       },
       roomScores: roomScores || existing.roomScores || undefined,
@@ -372,12 +551,50 @@ app.patch(
  */
 app.delete('/:id', async (c) => {
   const id = c.req.param('id');
-  const deleted = await removeApartment(id);
-
-  if (!deleted) {
+  // This route had no ownership check at all: any signed-in user could delete
+  // another household's listing by guessing its id.
+  const apartment = await findApartmentForHousehold(id, c.get('householdId'));
+  if (!apartment) {
     return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
   }
 
+  // Archive rather than destroy. Dismissing a flat at 1am should be reversible,
+  // and the archive is where you go digging when too little is qualifying.
+  const archived = await archiveApartment(id);
+  globalEvents.emit('apartmentUpdated', { id, archived: true });
+  return c.json({ success: true, id, archived: true, apartment: archived }, 200);
+});
+
+/**
+ * POST /api/apartments/:id/restore
+ * Brings a listing back to the dashboard with its score and history intact.
+ */
+app.post('/:id/restore', async (c) => {
+  const id = c.req.param('id');
+  const apartment = await findApartmentForHousehold(id, c.get('householdId'));
+  if (!apartment) {
+    return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
+  }
+
+  const restored = await restoreApartment(id);
+  globalEvents.emit('apartmentUpdated', { id, archived: false });
+  return c.json(restored, 200);
+});
+
+/**
+ * DELETE /api/apartments/:id/permanent
+ * Actually destroys the row, and its conversation with it. Only reachable from the
+ * archive, so a permanent delete is always a second, deliberate action.
+ */
+app.delete('/:id/permanent', async (c) => {
+  const id = c.req.param('id');
+  const apartment = await findApartmentForHousehold(id, c.get('householdId'));
+  if (!apartment) {
+    return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
+  }
+
+  await removeApartment(id);
+  globalEvents.emit('apartmentUpdated', { id, deleted: true });
   return c.json({ success: true, id }, 200);
 });
 
@@ -388,7 +605,7 @@ app.delete('/:id', async (c) => {
 app.get('/:id/messages', async (c) => {
   const id = c.req.param('id');
   
-  const apartment = await findApartmentById(id);
+  const apartment = await findApartmentForHousehold(id, c.get('householdId'));
   if (!apartment) {
     return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
   }
@@ -404,7 +621,7 @@ app.get('/:id/messages', async (c) => {
 app.post('/:id/messages/init', async (c) => {
   const id = c.req.param('id');
   
-  const apartment = await findApartmentById(id);
+  const apartment = await findApartmentForHousehold(id, c.get('householdId'));
   if (!apartment) {
     return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
   }
@@ -414,15 +631,14 @@ app.post('/:id/messages/init', async (c) => {
     return c.json({ message: 'Conversation already initialized', statusCode: 400 }, 400);
   }
 
-  const user = c.get('user');
-  const userProfile = user?.username ? await findProfileByUsername(user.username) : await findFirstProfile();
+  const userProfile = await findProfileByHouseholdId(c.get('householdId'));
   
-  const persona = resolvePersona(userProfile);
+  const persona = await resolveHouseholdPersona(c.get('householdId'), userProfile);
 
   const ext = (apartment.extractedData || {}) as any;
-  const description = ext.description || apartment.rawHtml?.slice(0, 5000) || '';
+  const description = ext.description || '';
   
-  const outreach = await draftOutreachMessage(apartment.title, description, persona, ext.aiReview, apartment.featureScores);
+  const outreach = await draftOutreachMessage(apartment.title, description, persona, ext.aiReview);
 
   const now = new Date();
   const newMessage = await createMessage({
@@ -456,7 +672,7 @@ app.post(
     const id = c.req.param('id');
     const { sender, text, metadata } = c.req.valid('json');
 
-    const apartment = await findApartmentById(id);
+    const apartment = await findApartmentForHousehold(id, c.get('householdId'));
     if (!apartment) {
       return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
     }
@@ -489,7 +705,7 @@ app.patch(
     const messageId = c.req.param('messageId');
     const { text } = c.req.valid('json');
 
-    const apartment = await findApartmentById(id);
+    const apartment = await findApartmentForHousehold(id, c.get('householdId'));
     if (!apartment) return c.json({ error: 'Not found' }, 404);
 
     const updated = await updateMessage(messageId, text);
@@ -507,7 +723,7 @@ app.delete('/:id/messages/:messageId', async (c) => {
   const id = c.req.param('id');
   const messageId = c.req.param('messageId');
 
-  const apartment = await findApartmentById(id);
+  const apartment = await findApartmentForHousehold(id, c.get('householdId'));
   if (!apartment) return c.json({ error: 'Not found' }, 404);
 
   const deleted = await removeMessage(messageId);
@@ -522,7 +738,7 @@ app.delete('/:id/messages/:messageId', async (c) => {
  */
 app.post('/:id/messages/suggest', async (c) => {
   const id = c.req.param('id');
-  const apartment = await findApartmentById(id);
+  const apartment = await findApartmentForHousehold(id, c.get('householdId'));
   
   if (!apartment) {
     return c.json({ message: 'Apartment not found', statusCode: 404 }, 404);
@@ -530,10 +746,9 @@ app.post('/:id/messages/suggest', async (c) => {
 
   const messages = await findMessagesByApartmentId(id);
   
-  const user = c.get('user');
-  const userProfile = user?.username ? await findProfileByUsername(user.username) : await findFirstProfile();
+  const userProfile = await findProfileByHouseholdId(c.get('householdId'));
   
-  const persona = resolvePersona(userProfile);
+  const persona = await resolveHouseholdPersona(c.get('householdId'), userProfile);
 
   const ext = (apartment.extractedData || {}) as any;
   const chatHistory = messages.map(m => ({ sender: m.sender, text: m.text }));

@@ -1,59 +1,33 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { getCookie } from 'hono/cookie';
-import {
-  findProfileByUsername,
-  upsertProfile,
-  upsertProfileApiSchema,
-  findValidSessionByToken,
-} from '@leaseops/db';
+import { findProfileByHouseholdId, upsertProfile, upsertProfileApiSchema } from '@leaseops/db';
+import type { AuthEnv } from '../services/auth';
 
-const profilesRouter = new Hono();
-
-/**
- * Helper to extract authenticated user session from request.
- */
-async function getAuthenticatedUser(c: any) {
-  const ctxUser = c.get('user' as any);
-  if (ctxUser?.username) return { username: ctxUser.username };
-  const ctxSession = c.get('session' as any);
-  if (ctxSession?.username) return { username: ctxSession.username };
-
-  let token = getCookie(c, 'leaseops_session');
-  if (!token) {
-    const authHeader = c.req.header('Authorization');
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.slice(7).trim();
-    }
-  }
-  if (!token) return undefined;
-  return await findValidSessionByToken(token);
-}
+const profilesRouter = new Hono<AuthEnv>();
 
 /**
  * GET /api/profiles/me
- * Retrieves the current authenticated user's onboarding profile and MCDA weights.
+ * The household's onboarding profile and MCDA weights. Both partners see and
+ * edit the same row — the criteria belong to the search, not to a person.
+ *
+ * `requireAuth` is mounted in `index.ts`, so `householdId` is always present here.
  */
 profilesRouter.get('/me', async (c) => {
-  const session = await getAuthenticatedUser(c);
-  if (!session) {
-    return c.json({ message: 'Unauthorized', statusCode: 401 }, 401);
-  }
+  const profile = await findProfileByHouseholdId(c.get('householdId'));
 
-  const profile = await findProfileByUsername(session.username);
   if (!profile) {
     return c.json(
       {
         exists: false,
-        username: session.username,
         targetLocation: '',
         targetLanguage: 'English',
-        autoTranslateListings: true,
         autoDraftMessages: true,
         currency: 'EUR',
         idealRent: 1200,
         maxRent: 1500,
+        qualifyingThreshold: 70,
         featureWeights: {},
+        spaceRequirements: {},
         tenantPersona: '',
       },
       200
@@ -65,29 +39,28 @@ profilesRouter.get('/me', async (c) => {
 
 /**
  * PUT /api/profiles/me
- * Creates or updates the authenticated user's onboarding profile and MCDA weights.
+ * Creates or updates the household's profile. The household comes from the
+ * session, never the request body, so a caller cannot write another household's
+ * criteria by supplying an id.
  */
 const upsertHandler = async (c: any) => {
-  const session = await getAuthenticatedUser(c);
-  if (!session) {
-    return c.json({ message: 'Unauthorized', statusCode: 401 }, 401);
-  }
-
+  const householdId = c.get('householdId');
   const data = c.req.valid('json');
-  const existing = await findProfileByUsername(session.username);
+  const existing = await findProfileByHouseholdId(householdId);
   const now = new Date();
 
   const saved = await upsertProfile({
     id: existing?.id || crypto.randomUUID(),
-    username: session.username,
+    householdId,
     targetLocation: data.targetLocation,
     targetLanguage: data.targetLanguage,
-    autoTranslateListings: data.autoTranslateListings,
     autoDraftMessages: data.autoDraftMessages,
     currency: data.currency,
     idealRent: data.idealRent,
     maxRent: data.maxRent,
+    qualifyingThreshold: data.qualifyingThreshold,
     featureWeights: data.featureWeights,
+    spaceRequirements: data.spaceRequirements,
     tenantPersona: data.tenantPersona,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
