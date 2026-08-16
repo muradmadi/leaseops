@@ -1,10 +1,31 @@
 # LeaseOps — Project Instructions
 
-Self-hosted PWA that treats apartment listings as inbound sales leads: scrape a
-listing URL → extract structured data via LLM → score it against user-weighted
-criteria (MCDA) → route to qualified/disqualified → auto-draft landlord outreach.
+Self-hosted PWA that treats apartment listings as inbound sales leads: enter a
+listing by hand → score it against user-weighted criteria (MCDA) → route to
+qualified/disqualified → auto-draft landlord outreach.
 
-Version 1.0.0 · AGPL-3.0 · single-user, self-hosted.
+Version 1.0.0 · AGPL-3.0 · self-hosted, household-scoped.
+
+## Households own everything
+
+A **household** is the unit of ownership: the criteria, the pipeline, the outreach
+threads. `users` are only credentials pointing at one, so two partners sharing a
+household see an identical dashboard from any device.
+
+- Every query that reads or writes user data scopes to `householdId`, and that id
+  comes from the session (`c.get('householdId')`) — **never** from a request body
+  or query parameter.
+- Route handlers use `findApartmentForHousehold`. `findApartmentByIdUnscoped`
+  exists only for background work that already holds a trusted id.
+- **Only the user's own ratings drive scoring.** There is no evidence-derivation
+  step: the add-listing modal asks for a rating on every feature weighted 4 or 5,
+  and anything unrated falls back to a neutral 4. Do not reintroduce a path that
+  infers ratings from the listing text — an explicit rating always won anyway, so
+  it only ever produced inconsistency.
+- Passwords are hashed with `Bun.password` (argon2id). Never return a `User` row
+  straight from a route — use `toPublicUser`.
+- The household join code is a secret granting full access. It is rotatable and
+  must never be logged.
 
 ## Monorepo layout
 
@@ -79,19 +100,27 @@ will not load**, API keys will appear unset, and every LLM feature silently fall
 back to its offline generator. This looks like a bug and is not one.
 
 Without an LLM key the app is fully functional with deterministic offline output.
-Without `SCRAPFLY_API_KEY`, adding a listing fails and is saved as `ERROR`.
+Listings are entered by hand — there is no scraping and no API key needed to add one.
 
 ## Known gaps (do not "discover" these as bugs)
 
-- **Single-user auth.** One username/password from env, server-side sessions.
+- **No password reset.** No email exists in the system; recovery is "make a new
+  account, rejoin with the household code".
+- **No per-member permissions.** Anyone holding a household's code has full access.
 - **No production Docker image.** `docker-compose.yml` runs the dev server with
   source bind-mounted.
-- **Outreach drafts end with a name placeholder.** `TenantPersona` has no name field.
-- **Soft dealbreakers do not force disqualification.** A 0–1 rating on a weight-5
-  feature is reported but does not by itself disqualify. This is deliberate and
-  asserted in `apps/api/src/services/mcda.test.ts`. Do not "fix" it to match a
-  stricter reading of the product description — change the test first if the
-  product decision genuinely changes.
+- **The outreach sign-off is derived, never typed.** It is rebuilt on every draft
+  from the household members' display names, joined by a conjunction in the target
+  language (`apps/api/src/services/signoff.ts`) — "Murad und Paulie" in German,
+  "Murad y Paulie" in Spanish. There is no `signOffName` field; do not reintroduce
+  one. With no usable names the draft ends after the valediction — it must never
+  invent a name or emit a `[Your Name]` placeholder.
+- **Soft dealbreakers penalise heavily but are not a hard veto.** A weight-5
+  feature rated below 3 multiplies the score by up to 0.55 (see
+  `MAX_PENALTY_PER_CRITICAL`). At the default 70% threshold a 0/5 cannot survive
+  and a 1/5 will not either, but the listing is still scored and still shown with
+  its reason rather than hidden. Deliberate, and asserted in
+  `apps/api/src/services/mcda.test.ts`.
 - **Manual ratings silently override listing evidence.** A user rating beats
   extracted data in scoring, while the AI review still reads the listing, so the
   two can disagree. Open design question, not a defect.

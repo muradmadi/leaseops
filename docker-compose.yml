@@ -13,8 +13,6 @@ services:
       - NODE_ENV=development
       - DATABASE_URL=/app/data/local_leaseops.db
       - PORT=3000
-      - AUTH_USERNAME=${AUTH_USERNAME:-admin}
-      - AUTH_PASSWORD=${AUTH_PASSWORD:-leaseops}
     ports:
       - "3000:3000"   # Backend API
       - "5173:5173"   # Frontend Web Dev

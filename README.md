@@ -2,9 +2,9 @@
 
 **Self-hosted apartment hunting, run like a sales pipeline.**
 
-Apartment hunting is a spreadsheet problem pretending to be an emotional one. You open forty tabs, forget which flat had the good kitchen, and end up choosing on vibes at 1am. LeaseOps treats every listing as an inbound lead: it scrapes the listing, scores it against criteria *you* weighted, routes it into qualified or not, and drafts the outreach message in the landlord's language.
+Apartment hunting is a spreadsheet problem pretending to be an emotional one. You open forty tabs, forget which flat had the good kitchen, and end up choosing on vibes at 1am. LeaseOps treats every listing as an inbound lead: you paste it in, it scores the listing against criteria *you* weighted, routes it into qualified or not, and drafts the outreach message in the landlord's language.
 
-Paste a URL. Get a number, a blunt summary of what you're giving up, and a message you can send.
+Paste the listing text. Get a number, a blunt summary of what you're giving up, and a message you can send.
 
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
 ![Runtime](https://img.shields.io/badge/runtime-Bun-black)
@@ -15,31 +15,38 @@ Paste a URL. Get a number, a blunt summary of what you're giving up, and a messa
 ## How it works
 
 ```
-Listing URL
+Paste the listing
     │
-    ├─▶ Scrapfly ──────────▶ raw HTML (bypasses portal anti-bot / WAF)
-    │
-    ├─▶ LLM extraction ────▶ structured JSON (price, m², rooms, amenities, photos)
+    ├─▶ Manual entry ──────▶ description, rent, size, rooms, stated amenities
     │
     ├─▶ MCDA scoring ──────▶ weighted score vs. your criteria + budget ceiling
     │
     ├─▶ Pipeline routing
     │      │
     │      ├─ 🟢 QUALIFIED ──▶ AI review + outreach message auto-drafted
-    │      └─ ⚪ DISQUALIFIED ▶ compromise summary; no LLM spend on outreach
+    │      └─ 🟡 FELL SHORT ─▶ compromise summary; no LLM spend on outreach
+    │             └─ "Activate" ▶ pursue it anyway; releases the withheld AI work
     │
     └─▶ Micro-CRM ─────────▶ per-listing chat log with AI reply suggestions
 ```
 
 ### Mathematical scoring, not vibes
 
-During onboarding you weight ~32 apartment features from 1 to 5. Anything you weight 4 or 5 gets scored; weight 5 is a non-negotiable. Each listing is then scored:
+During onboarding you weight ~48 apartment features from 1 to 5. Anything you weight 4 or 5 gets scored; weight 5 is a non-negotiable. Each listing is then scored in two stages:
 
 ```
-score = Σ(rating × weight) / Σ(5 × weight) × 100
+base    = Σ(rating × weight) / Σ(5 × weight) × 100     how well it fits overall
+penalty = ×0.55 … ×1.0  per non-negotiable rated below 3/5
+score   = base × penalty
 ```
 
-A listing qualifies when it clears your threshold (default 70%) **and** sits within your budget ceiling. Price is checked against the extracted price, so an over-budget flat can't sneak through on a typo.
+The second stage exists because a plain weighted average forgives too much: with twenty non-negotiables, a flat that scored **0/5** on one of them still came out at 95%. The more things you called non-negotiable, the less any single failure mattered. The penalty is multiplicative, so it costs the same whether you weighted five features or fifty, and compounds when a listing fails several.
+
+Rent is scored too, not just gated: full marks at or below your ideal, tapering to zero at your ceiling, so a bargain outranks an identical flat scraping your limit. A listing qualifies at a threshold **you set** during onboarding (default 70%) **and** within your budget ceiling.
+
+Anything you have not rated counts as 3/5 — unknown, not fine. A listing nobody has assessed lands around 60% and stays out of the qualified bucket rather than looking like a good lead.
+
+The figures you gave as numbers are scored too. Floor area rates 3/5 at your minimum, 5/5 at your maximum, and drifts back down above it — because that's what a maximum means. Below your minimum it decays sharply and takes the same penalty as a failed non-negotiable, so an undersized flat can't be rescued by a good kitchen. Room impressions from the walkthrough are averaged into one criterion that moves the score without being able to sink it on its own.
 
 ### It tells you what you're giving up
 
@@ -66,23 +73,24 @@ bun install
 cp .env.example .env
 ```
 
-Edit `.env` and set at minimum `AUTH_USERNAME` and `AUTH_PASSWORD`. Then:
+No credentials to configure — you create an account in the app. Then:
 
 ```bash
 bun run db:migrate
 bun run dev
 ```
 
-Open http://localhost:5173 and complete onboarding to set your criteria.
+Open http://localhost:5173, sign up to create your household, and complete onboarding to set your criteria.
+
+Hunting with a partner? They sign up too, choosing **Join**, and enter the household code from your Settings screen. You then share one pipeline, one set of criteria and one set of outreach threads, from any device.
 
 ### API keys are optional
 
 | Key | Without it |
 |---|---|
-| `SCRAPFLY_API_KEY` | Listings can't be fetched — required to add real listings |
-| `DEEPSEEK_API_KEY` *(or `OPENAI_API_KEY`)* | Everything still works; LLM output falls back to a deterministic generator that derives text from the scraped data |
+| `ANTHROPIC_API_KEY` | Everything still works; LLM output falls back to a deterministic generator derived from what you entered |
 
-Only Scrapfly is genuinely required, because portals like Idealista sit behind DataDome and won't serve a plain fetch.
+No key is required to add and score listings — you enter them by hand.
 
 ### Docker
 
@@ -131,15 +139,23 @@ Scraped listing text is attacker-controlled — a landlord can write anything in
 
 ---
 
+### Digging through what didn't qualify
+
+When too little is getting through, the flats that fell short are still there with a reason attached. **Activate** on any of them marks it as pursued and generates the AI review and outreach draft the pipeline withheld. It does not move the listing into Meeting Criteria — the score is a measurement, and deciding to chase a flat doesn't change what it measured.
+
+---
+
 ## Known limitations
 
 Honest list, so nothing surprises you:
 
-- **Single user.** Auth is one username/password from the environment, with server-side sessions. Fine self-hosted behind your own network; not multi-tenant.
+- **No password reset.** There is no email in the system by design. If you lose a password, create a new account and rejoin with the household code.
+- **Anyone with the household code gets full access.** It is rotatable from Settings, but there are no per-member permissions — a household is assumed to be people who trust each other.
 - **No production container.** `docker-compose.yml` runs the dev server with source mounted. A real image is still to do.
-- **Portal coverage is Spain-leaning.** Extraction is LLM-based so it generalizes reasonably, but Scrapfly's country routing is tuned for Idealista.
-- **Outreach drafts end with a name placeholder.** The tenant persona has no name field yet, so you fill that in before sending.
-- **Soft dealbreakers don't force disqualification.** Scoring a 0–1 on a weight-5 feature is reported in the compromise summary, but a listing strong enough elsewhere can still qualify. Deliberate, and covered by tests — change `calculateMcdaScore` if you disagree.
+- **Listings are entered by hand.** You paste the description and type the figures. Nothing is scraped, so nothing breaks when a portal changes its markup — but adding a flat takes a minute.
+- **No photos.** LeaseOps stores no images; keep the listing tab open if you want to look at it.
+- **Drafts sign with your household's names.** Whoever is in the household is joined in your target language — "Murad und Paulie" in German. Set no names anywhere and drafts end without a signature rather than inventing one.
+- **Non-negotiables are penalised, not vetoed.** A weight-5 feature rated below 3/5 takes a large multiplicative cut rather than removing the listing outright. At the default threshold a 0/5 or 1/5 won't survive it, but the flat is still scored and still shown with the reason attached, rather than silently disappearing.
 - **Manual ratings override listing evidence silently.** If you rate a feature the listing contradicts, the score trusts you while the AI review trusts the listing, which can read as inconsistent.
 
 ---
