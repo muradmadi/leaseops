@@ -65,6 +65,15 @@ export type AppType = typeof routes;
 const port = Number(Bun.env.PORT) || 3000;
 console.log(`🚀 LeaseOps API running on http://localhost:${port}`);
 
+// The Anthropic key is per household now, so this variable is no longer read at
+// request time. Said out loud because the alternative is an instance that looks
+// configured, produces offline output everywhere, and gives no reason why.
+if (Bun.env.ANTHROPIC_API_KEY?.trim()) {
+  console.log(
+    'ℹ️  ANTHROPIC_API_KEY is set but no longer used at runtime — each household stores its own key. Settings → AI has a one-click import for this one.'
+  );
+}
+
 export default {
   port,
   // Bun's 10s default closes the long-lived /api/apartments/sse stream, which

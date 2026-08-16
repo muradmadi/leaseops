@@ -1,6 +1,12 @@
 import { eq, asc } from 'drizzle-orm';
 import { db } from '../client';
-import { households, type Household, type NewHousehold } from '../schema/households';
+import {
+  households,
+  DEFAULT_ANTHROPIC_MODEL,
+  type Household,
+  type NewHousehold,
+  type AnthropicModelId,
+} from '../schema/households';
 import { users, type User } from '../schema/auth';
 
 /**
@@ -100,4 +106,108 @@ export async function findHouseholdMembers(
 export async function removeHousehold(id: string): Promise<Household | undefined> {
   const [deleted] = await db.delete(households).where(eq(households.id, id)).returning();
   return deleted;
+}
+
+/** What Settings shows about the household's Anthropic credential. Never the key. */
+export interface PublicHouseholdLlm {
+  /** False means every AI feature is producing deterministic offline output. */
+  keySet: boolean;
+  /** Last four characters, for recognising which key is installed. */
+  keyHint: string | null;
+  /** The member paying for the household's usage. */
+  setBy: string | null;
+  setAt: Date | null;
+  /** Resolved, so the client never has to know the default. */
+  model: AnthropicModelId;
+}
+
+export interface PublicHousehold {
+  id: string;
+  name: string;
+  joinCode: string;
+  createdAt: Date;
+  llm: PublicHouseholdLlm;
+}
+
+/**
+ * The only safe way to put a household on the wire.
+ *
+ * `households` now holds an API key, so hand-picking fields at each of the five
+ * call sites is one forgotten `c.json(household)` away from shipping a live
+ * credential to the browser. This is the `toPublicUser` of households and every
+ * route must go through it.
+ */
+export function toPublicHousehold(household: Household): PublicHousehold {
+  const key = household.anthropicApiKey;
+  return {
+    id: household.id,
+    name: household.name,
+    joinCode: household.joinCode,
+    createdAt: household.createdAt,
+    llm: {
+      keySet: Boolean(key),
+      keyHint: key ? key.slice(-4) : null,
+      setBy: household.anthropicApiKeySetBy,
+      setAt: household.anthropicApiKeySetAt,
+      model: household.anthropicModel || DEFAULT_ANTHROPIC_MODEL,
+    },
+  };
+}
+
+/**
+ * Installs the household's Anthropic key and records who supplied it.
+ *
+ * `setBy` is the billing relationship made explicit: that member's account pays
+ * for every LLM call the household makes until the key is replaced.
+ */
+export async function setHouseholdAnthropicKey(
+  householdId: string,
+  apiKey: string,
+  setBy: string
+): Promise<Household | undefined> {
+  const now = new Date();
+  const [updated] = await db
+    .update(households)
+    .set({
+      anthropicApiKey: apiKey,
+      anthropicApiKeySetBy: setBy,
+      anthropicApiKeySetAt: now,
+      updatedAt: now,
+    })
+    .where(eq(households.id, householdId))
+    .returning();
+  return updated;
+}
+
+/**
+ * Removes the key and everything identifying its owner. Called from Settings and
+ * whenever the member who set it leaves, so nobody keeps spending a key they no
+ * longer control. The household drops to offline output until someone adds one.
+ */
+export async function clearHouseholdAnthropicKey(
+  householdId: string
+): Promise<Household | undefined> {
+  const [updated] = await db
+    .update(households)
+    .set({
+      anthropicApiKey: null,
+      anthropicApiKeySetBy: null,
+      anthropicApiKeySetAt: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(households.id, householdId))
+    .returning();
+  return updated;
+}
+
+export async function setHouseholdAnthropicModel(
+  householdId: string,
+  model: AnthropicModelId
+): Promise<Household | undefined> {
+  const [updated] = await db
+    .update(households)
+    .set({ anthropicModel: model, updatedAt: new Date() })
+    .where(eq(households.id, householdId))
+    .returning();
+  return updated;
 }

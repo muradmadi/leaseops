@@ -84,13 +84,21 @@ Open http://localhost:5173, sign up to create your household, and complete onboa
 
 Hunting with a partner? They sign up too, choosing **Join**, and enter the household code from your Settings screen. You then share one pipeline, one set of criteria and one set of outreach threads, from any device.
 
-### API keys are optional
+### The API key lives in the app, not in `.env`
 
-| Key | Without it |
-|---|---|
-| `ANTHROPIC_API_KEY` | Everything still works; LLM output falls back to a deterministic generator derived from what you entered |
+Add your Anthropic key under **Settings → AI & billing**. It belongs to the
+household, so whoever adds it is paying for everyone in it, and the panel says
+whose key is being billed. The model is chosen right beside it, from the list
+Anthropic actually offers your key.
 
-No key is required to add and score listings — you enter them by hand.
+Without a key everything still works: analysis and outreach fall back to a
+deterministic generator built from what you entered, and nothing is invented in
+either mode. No key is required to add and score listings — you enter those by
+hand.
+
+`ANTHROPIC_API_KEY` in `.env` is not read when the app runs. If it is set,
+Settings offers to import it into your household in one click; once you have a
+key stored you can delete the variable.
 
 ### Docker
 

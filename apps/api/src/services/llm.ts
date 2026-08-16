@@ -4,7 +4,18 @@
  */
 import { z } from 'zod';
 import { AiReviewSchema, type AiReview } from '@leaseops/db';
-import { completeJson, isOffline, untrustedBlock } from './anthropic';
+import { completeJson, untrustedBlock, type LlmConfig } from './anthropic';
+
+/**
+ * Whose key pays for this call, or `null` for offline.
+ *
+ * Every function that reaches Anthropic takes this as its first argument. It is
+ * deliberately required rather than optional: the compiler is what guarantees a
+ * new call site resolves the household's credential instead of quietly
+ * inheriting somebody else's. `null` is the explicit offline case — the test
+ * suite, or a household that has not added a key.
+ */
+export type LlmCredentials = LlmConfig | null;
 
 export interface TenantPersona {
   professionAndIncome?: string;
@@ -166,6 +177,7 @@ const OUTREACH_SCHEMA = {
 } as const;
 
 export async function draftOutreachMessage(
+  credentials: LlmCredentials,
   listingTitle: string,
   scrapedDescription: string,
   persona: TenantPersona,
@@ -205,7 +217,7 @@ export async function draftOutreachMessage(
     ? `WHAT THIS LISTING ASKS FOR\nThis is what the OWNER wants. It is not a form to fill in and not a description of the tenant. Answer a line only where the tenant facts below independently satisfy it.\n${requirements.map((r) => `- ${r}`).join('\n')}`
     : `WHAT THIS LISTING ASKS FOR\nNot provided. Write only from the tenant facts below and ask for a viewing.`;
 
-  if (isOffline()) {
+  if (!credentials) {
     console.log(`[LLM Service] Using offline stub for outreach message generation.`);
     const lines = [
       `Hello,`,
@@ -225,6 +237,7 @@ export async function draftOutreachMessage(
   }
 
   const result = await completeJson<{ subject: string; body: string }>({
+    config: credentials,
     system: OUTREACH_RULES,
     user: `${untrustedBlock(scrapedDescription || listingTitle)}
 
@@ -282,6 +295,7 @@ const CHAT_REPLY_SCHEMA = {
 } as const;
 
 export async function suggestChatReply(
+  credentials: LlmCredentials,
   listingTitle: string,
   chatHistory: { sender: string; text: string }[],
   persona: TenantPersona,
@@ -294,13 +308,14 @@ export async function suggestChatReply(
 
   const statedFacts = buildStatedFacts(persona);
 
-  if (isOffline()) {
+  if (!credentials) {
     return {
       text: 'Thank you for the update. Please let me know the next steps and I will arrange things from my side.',
     };
   }
 
   const result = await completeJson<{ text: string }>({
+    config: credentials,
     system: CHAT_REPLY_RULES,
     user: `TARGET PROPERTY: ${listingTitle}
 LANGUAGE: ${language}
@@ -474,6 +489,7 @@ const ANALYSIS_SCHEMA = {
 } as const;
 
 export async function analyseListing(
+  credentials: LlmCredentials,
   listingTitle: string,
   price: number,
   description: string,
@@ -497,9 +513,10 @@ export async function analyseListing(
   /** Nothing was read, so nothing is claimed. */
   const unread = (): AiReview => AiReviewSchema.parse({ flags: [], unknowns: [], analysed: false });
 
-  if (isOffline() || !description.trim()) return unread();
+  if (!credentials || !description.trim()) return unread();
 
   const analysis = await completeJson<{ flags?: any[]; unknowns?: any[] }>({
+    config: credentials,
     system: ANALYSIS_RULES,
     user: `${untrustedBlock(description)}
 

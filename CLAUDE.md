@@ -26,6 +26,12 @@ household see an identical dashboard from any device.
   straight from a route — use `toPublicUser`.
 - The household join code is a secret granting full access. It is rotatable and
   must never be logged.
+- **The Anthropic API key is per household**, stored on the `households` row and
+  set in Settings. The member who adds it pays for everyone. Never return a
+  `Household` row straight from a route — use `toPublicHousehold`, which strips
+  the key and leaves only metadata (last four characters, who set it, when).
+  Never log it. Resolve it with `resolveLlmConfig(householdId)`; a `null` result
+  means offline, which is a normal state, not an error.
 
 ## Monorepo layout
 
@@ -47,7 +53,7 @@ Run from the repo root. `just <recipe>` and `bun run <script>` are equivalent.
 | :--- | :--- |
 | `bun install` | Install all workspace dependencies |
 | `bun run dev` | API on :3000, web on :5173, both watching |
-| `bun test` | Full suite (47 tests) |
+| `bun test` | Full suite (142 tests) |
 | `bun run typecheck` | Typecheck all three workspaces |
 | `bun run build` | Production build |
 | `bun run db:migrate` | Apply Drizzle migrations |
@@ -96,17 +102,40 @@ keep it in sync when you add or remove one.
 
 Both API scripts pass `--env-file=../../.env` explicitly. If you launch the API
 some other way (e.g. `bun run src/index.ts` from `apps/api`), **the root `.env`
-will not load**, API keys will appear unset, and every LLM feature silently falls
-back to its offline generator. This looks like a bug and is not one.
+will not load** — which now only affects `DATABASE_URL`, `PORT` and CORS.
 
-Without an LLM key the app is fully functional with deterministic offline output.
-Listings are entered by hand — there is no scraping and no API key needed to add one.
+**The Anthropic key is not an environment variable.** It is stored per household
+and set in Settings → AI & billing. `ANTHROPIC_API_KEY` in `.env` is read only to
+offer a one-click import into a household; nothing reads it at request time, and
+the API logs a line at startup saying so if it is still set. `ANTHROPIC_MODEL` is
+gone entirely — the model is a household setting beside the key.
+
+**The model list is not hardcoded.** It comes from Anthropic's Models API using
+the household's own key, filtered to models supporting `structured_outputs` and
+`effort` — both of which `completeJson` sends on every call, so anything else
+would fail on first use. A new model therefore appears in Settings with no code
+change. Pricing is the exception: the Models API does not return it, so
+`KNOWN_RATES` in `services/anthropic.ts` holds published rates and a model absent
+from it shows **no** rate rather than a guessed one. Adding a row is optional.
+
+Without a household key the app is fully functional with deterministic offline
+output. Listings are entered by hand — there is no scraping and no API key needed
+to add one.
 
 ## Known gaps (do not "discover" these as bugs)
 
 - **No password reset.** No email exists in the system; recovery is "make a new
   account, rejoin with the household code".
-- **No per-member permissions.** Anyone holding a household's code has full access.
+- **No per-member permissions.** Anyone holding a household's code has full
+  access — including replacing or removing the household's Anthropic key.
+- **The household's API key is stored in plaintext** in the SQLite file.
+  Encrypting it needs a decryption key that background enrichment can reach,
+  which means `.env` — exactly what moving the key into the database removes. The
+  threat model matches `.env`'s, but it makes `.db` backups as sensitive as
+  `.env`. Both are gitignored. Deliberate, not an oversight.
+- **Leaving a household clears its key if you were the one paying.** Any other
+  member leaving does not. The household drops to offline output rather than
+  quietly spending a credential its owner no longer controls.
 - **No production Docker image.** `docker-compose.yml` runs the dev server with
   source bind-mounted.
 - **The outreach sign-off is derived, never typed.** It is rebuilt on every draft

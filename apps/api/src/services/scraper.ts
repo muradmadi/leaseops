@@ -13,6 +13,7 @@
  */
 import { updateApartmentEnrichment, findProfileByHouseholdId, type ApartmentListing } from '@leaseops/db';
 import { analyseListing, generateCompromiseSummary } from './llm';
+import { resolveLlmConfig } from './anthropic';
 import {
   calculateMcdaScore,
   deriveHighlights,
@@ -163,6 +164,7 @@ export async function processListingAsync(
     if (mcdaResult.status === 'QUALIFIED') {
       try {
         listing.aiReview = await analyseListing(
+          await resolveLlmConfig(householdId),
           listing.title,
           price,
           listing.description,

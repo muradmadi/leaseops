@@ -116,3 +116,44 @@ export const updateHouseholdApiSchema = z.object({
 });
 
 export type UpdateHouseholdApiPayload = z.infer<typeof updateHouseholdApiSchema>;
+
+/**
+ * The household's Anthropic key.
+ *
+ * Shape only — this cannot tell a revoked key from a live one, so the route also
+ * calls Anthropic before saving. Catching an obviously wrong paste here just
+ * gives a better message than a 401 would. The prefix check is deliberate: the
+ * most common mistake is pasting a key from a different service entirely.
+ */
+export const anthropicApiKeySchema = z
+  .string()
+  .trim()
+  .min(1, 'API key is required')
+  .max(200, 'That is too long to be an API key')
+  .refine((key) => !/\s/.test(key), 'API keys contain no spaces — check for a stray line break')
+  .refine((key) => key.startsWith('sk-ant-'), 'An Anthropic API key starts with "sk-ant-"');
+
+export const updateLlmKeyApiSchema = z.object({
+  apiKey: anthropicApiKeySchema,
+});
+
+export type UpdateLlmKeyApiPayload = z.infer<typeof updateLlmKeyApiSchema>;
+
+/**
+ * Shape only, because the valid set is Anthropic's to change and is read from
+ * their Models API rather than frozen here. The route rejects any id that is not
+ * in that live catalogue — an unlisted model would 404 on every call at runtime
+ * and look exactly like a broken key.
+ */
+export const anthropicModelIdSchema = z
+  .string()
+  .trim()
+  .min(1, 'A model is required')
+  .max(100, 'That is too long to be a model id')
+  .regex(/^[a-zA-Z0-9._-]+$/, 'Model ids contain only letters, numbers, dots, dashes and underscores');
+
+export const updateLlmModelApiSchema = z.object({
+  model: anthropicModelIdSchema,
+});
+
+export type UpdateLlmModelApiPayload = z.infer<typeof updateLlmModelApiSchema>;

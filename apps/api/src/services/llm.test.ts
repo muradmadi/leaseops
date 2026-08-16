@@ -13,6 +13,7 @@ describe('LLM Service & Security', () => {
 
   it('drafts valid outreach message matching Zod schema', async () => {
     const res = await draftOutreachMessage(
+      null,
       'Sunny Apartment',
       'Beautiful 2-bedroom in city center.',
       {
@@ -28,7 +29,7 @@ describe('LLM Service & Security', () => {
   });
 
   it('signs the outreach draft with the persona sign-off name', async () => {
-    const res = await draftOutreachMessage('Sunny Apartment', 'Beautiful 2-bedroom in city center.', {
+    const res = await draftOutreachMessage(null, 'Sunny Apartment', 'Beautiful 2-bedroom in city center.', {
       professionAndIncome: 'Software engineer with stable income.',
       targetLanguage: 'English',
       signOffName: 'Sam and Alex',
@@ -38,7 +39,7 @@ describe('LLM Service & Security', () => {
   });
 
   it('ends without a signature rather than inventing one when no sign-off name is set', async () => {
-    const res = await draftOutreachMessage('Sunny Apartment', 'Beautiful 2-bedroom in city center.', {
+    const res = await draftOutreachMessage(null, 'Sunny Apartment', 'Beautiful 2-bedroom in city center.', {
       professionAndIncome: 'Software engineer with stable income.',
       targetLanguage: 'English',
     });
@@ -72,6 +73,7 @@ describe('LLM Service & Security', () => {
     // real property is exactly what the no-fabrication rule forbids.
     const { analyseListing } = await import('./llm');
     const review = await analyseListing(
+      null,
       'Estudio en Palacio',
       1350,
       'Estudio reformado en el centro.',
@@ -94,7 +96,7 @@ describe('LLM Service & Security', () => {
 
     // The persona fields are optional, so an empty persona must not put claims
     // about contracts, guarantors or paperwork into the prompt as facts.
-    const res = await draftOutreachMessage('Sunny Apartment', 'Beautiful 2-bedroom.', {
+    const res = await draftOutreachMessage(null, 'Sunny Apartment', 'Beautiful 2-bedroom.', {
       targetLanguage: 'English',
     });
     expect(res.body).not.toContain('guarantor');
@@ -154,6 +156,7 @@ describe('Listing analysis', () => {
   it('restates only what was measured, and never pads to a quota', async () => {
     const { analyseListing } = await import('./llm');
     const analysis = await analyseListing(
+      null,
       'Estudio en Palacio',
       1100,
       'Estudio reformado de 34 m2.',
@@ -172,6 +175,7 @@ describe('Listing analysis', () => {
   it('claims nothing about the neighbourhood, which it cannot know', async () => {
     const { analyseListing } = await import('./llm');
     const analysis = await analyseListing(
+      null,
       'Estudio en Palacio',
       1100,
       'Estudio reformado.',
@@ -212,6 +216,7 @@ describe('Analysis unknowns', () => {
   it('does not ask about a feature the user has already rated', async () => {
     const { analyseListing } = await import('./llm');
     const analysis = await analyseListing(
+      null,
       'Estudio centro',
       1000,
       'Estudio luminoso de 40 m2 en el centro.',
@@ -252,6 +257,7 @@ describe('Initial outreach', () => {
     // blanks to "No pets, non-smoker" and "Stable professional" and sent those
     // invented claims about a real person to a real landlord.
     const res = await draftOutreachMessage(
+      null,
       'Piso en Malasaña',
       'Piso reformado.',
       { targetLanguage: 'English' },
@@ -269,6 +275,7 @@ describe('Initial outreach', () => {
     const { draftOutreachMessage } = await import('./llm');
 
     const signed = await draftOutreachMessage(
+      null,
       'Piso en Malasaña',
       'Piso reformado.',
       { targetLanguage: 'English', signOffName: 'Sam & Alex' },
@@ -277,6 +284,7 @@ describe('Initial outreach', () => {
     expect(signed.body).toContain('Sam & Alex');
 
     const unsigned = await draftOutreachMessage(
+      null,
       'Piso en Malasaña',
       'Piso reformado.',
       { targetLanguage: 'English' },
@@ -289,6 +297,7 @@ describe('Initial outreach', () => {
   it('carries the tenant facts it was actually given', async () => {
     const { draftOutreachMessage } = await import('./llm');
     const res = await draftOutreachMessage(
+      null,
       'Piso en Malasaña',
       'Piso reformado.',
       {

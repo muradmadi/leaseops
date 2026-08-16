@@ -134,6 +134,13 @@
       "when": 1786802185372,
       "tag": "0018_furry_raider",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1786867834512,
+      "tag": "0019_perpetual_dakota_north",
+      "breakpoints": true
     }
   ]
 }

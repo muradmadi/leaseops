@@ -21,14 +21,38 @@ import {
   Archive,
   RotateCcw,
   Trash2,
+  KeyRound,
+  Download,
 } from 'lucide-react';
 import { useAuth, useLogout } from '../lib/useAuth';
-import { useHousehold, useRotateJoinCode, useJoinHousehold, useUpdateMember } from '../lib/useHousehold';
+import {
+  useHousehold,
+  useRotateJoinCode,
+  useJoinHousehold,
+  useUpdateMember,
+  useSetLlmKey,
+  useClearLlmKey,
+  useImportEnvLlmKey,
+  useSetLlmModel,
+  useLlmModels,
+  type AvailableModel,
+} from '../lib/useHousehold';
 import {
   useArchivedApartments,
   useRestoreApartment,
   usePermanentlyDeleteApartment,
 } from '../lib/useApartments';
+
+/** How many models the picker shows before the "show all" toggle. */
+const MODELS_SHOWN_COLLAPSED = 4;
+
+/** `1000000` → `1M context`. Null stays null — nothing is estimated. */
+function formatContextWindow(tokens: number | null): string | null {
+  if (!tokens) return null;
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 1_000_000)}M context`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K context`;
+  return `${tokens} context`;
+}
 
 export default function SettingsView() {
   const { data: authState } = useAuth();
@@ -50,6 +74,55 @@ export default function SettingsView() {
   const [showJoin, setShowJoin] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState('');
+
+  const setKeyMutation = useSetLlmKey();
+  const clearKeyMutation = useClearLlmKey();
+  const importEnvKeyMutation = useImportEnvLlmKey();
+  const setModelMutation = useSetLlmModel();
+  const { data: catalogue, isLoading: modelsLoading } = useLlmModels();
+  const [keyDraft, setKeyDraft] = useState('');
+  const [showKeyForm, setShowKeyForm] = useState(false);
+  const [confirmRemoveKey, setConfirmRemoveKey] = useState(false);
+  const [showAllModels, setShowAllModels] = useState(false);
+
+  const llm = household?.llm;
+
+  /**
+   * The catalogue, guaranteed to contain whatever is currently selected.
+   *
+   * A household can be pointed at a model its current key no longer lists — the
+   * key was replaced, or Anthropic retired it. Dropping it from the list would
+   * show no selection at all, which reads as "nothing is set" when something very
+   * much is.
+   */
+  const models: AvailableModel[] = (() => {
+    const fetched = catalogue?.models ?? [];
+    if (!llm?.model || fetched.some((m) => m.id === llm.model)) return fetched;
+    return [
+      { id: llm.model, displayName: llm.model, rate: null, contextWindow: null, releasedAt: null },
+      ...fetched,
+    ];
+  })();
+  const visibleModels = showAllModels ? models : models.slice(0, MODELS_SHOWN_COLLAPSED);
+  const payer = household?.members.find((m) => m.id === llm?.setBy);
+  const payerIsMe = Boolean(llm?.setBy && llm.setBy === authState?.user?.id);
+  /** What the household is billed under, in words. Null when nothing is set. */
+  const payerLabel = !llm?.keySet
+    ? null
+    : payerIsMe
+      ? 'your key'
+      : payer
+        ? `${payer.displayName?.trim() || payer.username}'s key`
+        : 'a key from a member who has since left';
+
+  const submitKey = () => {
+    setKeyMutation.mutate(keyDraft.trim(), {
+      onSuccess: () => {
+        setKeyDraft('');
+        setShowKeyForm(false);
+      },
+    });
+  };
 
   const copyCode = async () => {
     if (!household?.joinCode) return;
@@ -383,6 +456,263 @@ export default function SettingsView() {
           </div>
         </section>
 
+        {/* AI & billing — whose key pays for the household's LLM usage */}
+        <section className="space-y-4">
+          <h2 className="text-sm font-bold text-zinc-500 uppercase tracking-widest pl-1">
+            AI &amp; billing
+          </h2>
+
+          <div className="bg-zinc-900/50 border border-zinc-800/80 rounded-2xl overflow-hidden divide-y divide-zinc-800/50">
+            {/* Who is paying */}
+            <div className="p-4 sm:p-5 flex items-center gap-3.5">
+              <div
+                className={`w-10 h-10 rounded-xl flex items-center justify-center border shrink-0 ${
+                  llm?.keySet
+                    ? 'bg-emerald-500/10 border-emerald-500/20'
+                    : 'bg-amber-500/10 border-amber-500/20'
+                }`}
+              >
+                <Sparkles
+                  className={`w-5 h-5 ${llm?.keySet ? 'text-emerald-400' : 'text-amber-400'}`}
+                />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs text-zinc-500 font-medium mb-0.5">Anthropic API key</p>
+                <p className="font-bold text-zinc-200 text-sm sm:text-base truncate">
+                  {householdLoading
+                    ? 'Loading...'
+                    : llm?.keySet
+                      ? `Billing to ${payerLabel}`
+                      : 'No key configured'}
+                </p>
+              </div>
+            </div>
+
+            {/* Offline state — the honest version of "the AI features look broken" */}
+            {!householdLoading && !llm?.keySet && (
+              <div className="p-4 sm:p-5 space-y-3">
+                <div className="flex items-start gap-2.5 text-xs text-amber-400/90 leading-relaxed">
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <p>
+                    Listing analysis and outreach drafts are falling back to offline output.
+                    Everything still works and nothing is invented — the drafts are just
+                    assembled from your own answers instead of written.
+                  </p>
+                </div>
+                {household?.envKeyAvailable && (
+                  <button
+                    type="button"
+                    onClick={() => importEnvKeyMutation.mutate()}
+                    disabled={importEnvKeyMutation.isPending}
+                    className="w-full min-h-[44px] rounded-xl bg-zinc-800/70 hover:bg-zinc-800 text-zinc-300 font-bold text-sm border border-zinc-700/50 flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>
+                      {importEnvKeyMutation.isPending
+                        ? 'Checking key...'
+                        : "Use this server's configured key"}
+                    </span>
+                  </button>
+                )}
+                {importEnvKeyMutation.isError && (
+                  <p className="text-xs text-red-400">{importEnvKeyMutation.error?.message}</p>
+                )}
+              </div>
+            )}
+
+            {/* The key itself */}
+            <div className="p-4 sm:p-5 space-y-3">
+              {llm?.keySet && !showKeyForm && (
+                <div>
+                  <p className="text-xs text-zinc-500 font-medium mb-1.5">Installed key</p>
+                  <code className="block font-mono text-sm font-bold tracking-wider text-zinc-300 bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3">
+                    sk-ant-••••••••{llm.keyHint}
+                  </code>
+                </div>
+              )}
+
+              {showKeyForm ? (
+                <>
+                  <p className="text-xs text-zinc-400 leading-relaxed">
+                    {llm?.keySet
+                      ? 'Replacing the key moves the household’s AI spend onto the new one. The old key stops being used immediately.'
+                      : 'Paste a key from console.anthropic.com. Whoever adds it pays for everyone in the household.'}
+                  </p>
+                  <input
+                    type="password"
+                    value={keyDraft}
+                    onChange={(e) => setKeyDraft(e.target.value)}
+                    placeholder="sk-ant-..."
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500/60 rounded-xl px-4 py-3 text-[16px] sm:text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[48px]"
+                  />
+                  {setKeyMutation.isError && (
+                    <p className="text-xs text-red-400">{setKeyMutation.error?.message}</p>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={submitKey}
+                      disabled={setKeyMutation.isPending || keyDraft.trim().length === 0}
+                      className="flex-1 min-h-[44px] rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-bold text-sm transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {setKeyMutation.isPending ? 'Checking with Anthropic...' : 'Save key'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowKeyForm(false);
+                        setKeyDraft('');
+                        setKeyMutation.reset();
+                      }}
+                      className="flex-1 min-h-[44px] rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-sm border border-zinc-700/50 transition-all active:scale-[0.98] cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowKeyForm(true)}
+                  className="w-full min-h-[44px] rounded-xl bg-zinc-800/70 hover:bg-zinc-800 text-zinc-300 font-bold text-sm border border-zinc-700/50 flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  <span>{llm?.keySet ? 'Replace key' : 'Add API key'}</span>
+                </button>
+              )}
+
+              {llm?.keySet && !showKeyForm && (
+                confirmRemoveKey ? (
+                  <div className="space-y-2.5 pt-1">
+                    <p className="text-xs text-zinc-400 leading-relaxed">
+                      Remove the key? Listing analysis and outreach drafts drop to offline
+                      output for everyone in the household until someone adds another.
+                    </p>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          clearKeyMutation.mutate(undefined, {
+                            onSettled: () => setConfirmRemoveKey(false),
+                          })
+                        }
+                        disabled={clearKeyMutation.isPending}
+                        className="flex-1 min-h-[44px] rounded-xl bg-red-500 hover:bg-red-600 text-white font-bold text-sm transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                      >
+                        {clearKeyMutation.isPending ? 'Removing...' : 'Remove key'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmRemoveKey(false)}
+                        className="flex-1 min-h-[44px] rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-sm border border-zinc-700/50 transition-all active:scale-[0.98] cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRemoveKey(true)}
+                    className="w-full min-h-[44px] rounded-xl text-red-400 hover:text-red-300 hover:bg-red-500/10 font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>Remove key</span>
+                  </button>
+                )
+              )}
+            </div>
+
+            {/* Model — the cost lever, next to the person paying it */}
+            <div className="p-4 sm:p-5 space-y-3">
+              <div>
+                <p className="text-xs text-zinc-500 font-medium mb-0.5">Model</p>
+                <p className="text-xs text-zinc-500 leading-relaxed">
+                  Applies to every AI feature in the household. Charged to the key above.
+                </p>
+              </div>
+
+              {modelsLoading ? (
+                <p className="text-xs text-zinc-500">Loading models from Anthropic...</p>
+              ) : (
+                <>
+                  <div className="grid gap-2">
+                    {visibleModels.map((model) => {
+                      const active = llm?.model === model.id;
+                      const context = formatContextWindow(model.contextWindow);
+                      return (
+                        <button
+                          key={model.id}
+                          type="button"
+                          onClick={() => setModelMutation.mutate(model.id)}
+                          disabled={setModelMutation.isPending || active}
+                          className={`w-full min-h-[44px] text-left rounded-xl px-4 py-3 border transition-all duration-150 active:scale-[0.98] cursor-pointer disabled:cursor-default ${
+                            active
+                              ? 'bg-blue-500/10 border-blue-500/50'
+                              : 'bg-zinc-950 border-zinc-800 hover:border-zinc-700'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span
+                              className={`font-bold text-sm truncate ${active ? 'text-blue-300' : 'text-zinc-300'}`}
+                            >
+                              {model.displayName}
+                            </span>
+                            {/* Only when we have a published rate — never estimated. */}
+                            {model.rate && (
+                              <span className="text-xs font-mono text-zinc-500 shrink-0">
+                                {model.rate}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-zinc-600 font-mono mt-0.5 truncate">
+                            {model.id}
+                            {context ? ` · ${context}` : ''}
+                          </p>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {models.length > MODELS_SHOWN_COLLAPSED && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllModels((v) => !v)}
+                      className="w-full min-h-[44px] rounded-xl bg-zinc-800/70 hover:bg-zinc-800 text-zinc-400 font-bold text-xs border border-zinc-700/50 transition-all active:scale-[0.98] cursor-pointer"
+                    >
+                      {showAllModels
+                        ? 'Show fewer'
+                        : `Show all ${models.length} available models`}
+                    </button>
+                  )}
+
+                  <p className="text-xs text-zinc-500 leading-relaxed">
+                    {catalogue?.source === 'live'
+                      ? 'Read from Anthropic with your key, newest first — new models appear here on their own. Only models supporting the structured output this app relies on are listed.'
+                      : 'Showing the built-in list. Add a key above to read the current models straight from Anthropic.'}
+                  </p>
+                </>
+              )}
+
+              {setModelMutation.isError && (
+                <p className="text-xs text-red-400">{setModelMutation.error?.message}</p>
+              )}
+            </div>
+
+            <div className="p-4 sm:p-5">
+              <div className="flex items-start gap-2.5 text-xs text-zinc-500 leading-relaxed">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <p>
+                  The key is stored on this server and never sent to the browser. Anyone in
+                  the household can replace it, and it is cleared automatically if the member
+                  who added it leaves.
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
 
         {/* Archive */}
         <section className="space-y-4">

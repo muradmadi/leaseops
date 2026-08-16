@@ -49,6 +49,7 @@ import {
   suggestChatReply,
   generateCompromiseSummary,
 } from '../services/llm';
+import { resolveLlmConfig } from '../services/anthropic';
 import { globalEvents } from '../services/events';
 import { z } from 'zod';
 
@@ -231,6 +232,7 @@ app.post('/:id/ai-review', async (c) => {
   const userProfile = await findProfileByHouseholdId(c.get('householdId'));
 
   const aiReview = await analyseListing(
+    await resolveLlmConfig(c.get('householdId')),
     apartment.title || ext.title || 'Property',
     apartment.price || ext.price?.amount || 0,
     ext.description || '',
@@ -638,7 +640,13 @@ app.post('/:id/messages/init', async (c) => {
   const ext = (apartment.extractedData || {}) as any;
   const description = ext.description || '';
   
-  const outreach = await draftOutreachMessage(apartment.title, description, persona, ext.aiReview);
+  const outreach = await draftOutreachMessage(
+    await resolveLlmConfig(c.get('householdId')),
+    apartment.title,
+    description,
+    persona,
+    ext.aiReview
+  );
 
   const now = new Date();
   const newMessage = await createMessage({
@@ -752,7 +760,14 @@ app.post('/:id/messages/suggest', async (c) => {
 
   const ext = (apartment.extractedData || {}) as any;
   const chatHistory = messages.map(m => ({ sender: m.sender, text: m.text }));
-  const suggestion = await suggestChatReply(apartment.title, chatHistory, persona, ext.aiReview, apartment.featureScores);
+  const suggestion = await suggestChatReply(
+    await resolveLlmConfig(c.get('householdId')),
+    apartment.title,
+    chatHistory,
+    persona,
+    ext.aiReview,
+    apartment.featureScores
+  );
 
   const now = new Date();
   const newMessage = await createMessage({

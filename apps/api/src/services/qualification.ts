@@ -19,6 +19,7 @@ import {
   type UserProfile,
 } from '@leaseops/db';
 import { analyseListing, draftOutreachMessage, type TenantPersona } from './llm';
+import { resolveLlmConfig } from './anthropic';
 import { buildHouseholdSignOff, buildWritingForms } from './signoff';
 import { globalEvents } from './events';
 
@@ -81,6 +82,10 @@ export async function resolveHouseholdPersona(
 /**
  * Generates and persists an AI review for a qualified listing if it does not
  * already have one. Returns the review, or undefined if generation failed.
+ *
+ * Billed to the household that owns the listing. That is taken from the
+ * apartment row rather than passed in, so background enrichment can never charge
+ * the wrong household's key.
  */
 export async function ensureAiReview(
   apartment: Apartment,
@@ -91,6 +96,7 @@ export async function ensureAiReview(
 
   try {
     const aiReview = await analyseListing(
+      await resolveLlmConfig(apartment.householdId),
       apartment.title || ext.title || 'Property',
       apartment.price || ext.price?.amount || 0,
       ext.description || '',
@@ -129,6 +135,7 @@ export async function maybeAutoDraftOutreach(
 
   try {
     const outreach = await draftOutreachMessage(
+      await resolveLlmConfig(apartment.householdId),
       apartment.title,
       description,
       await resolveHouseholdPersona(apartment.householdId, userProfile),

@@ -9,6 +9,7 @@ import {
   createUser,
   findUserByUsername,
   toPublicUser,
+  toPublicHousehold,
   createHousehold,
   findHouseholdById,
   findHouseholdByJoinCode,
@@ -55,7 +56,9 @@ function authPayload(user: User, household: Household, token: string) {
   return {
     success: true,
     user: toPublicUser(user),
-    household: { id: household.id, name: household.name, joinCode: household.joinCode },
+    // `toPublicHousehold`, never the raw row — that row holds the household's
+    // Anthropic key.
+    household: toPublicHousehold(household),
     token,
   };
 }
@@ -157,7 +160,7 @@ const authRouter = new Hono<AuthEnv>()
       {
         authenticated: true,
         user: toPublicUser(resolved.user),
-        household: { id: household.id, name: household.name },
+        household: toPublicHousehold(household),
       },
       200
     );

@@ -197,6 +197,24 @@ directly. It must never run against 0.
 One provider — Anthropic — reached only through `services/anthropic.ts`. No LLM
 function may build its own HTTP call.
 
+**Every call is billed to a household.** The credential comes from the
+`households` row, not the environment, so each LLM function takes an
+`LlmCredentials` (`LlmConfig | null`) as its **first** parameter. Resolve it with
+`await resolveLlmConfig(householdId)` and pass it down — required rather than
+optional precisely so the compiler catches a new call site that forgot. `null`
+is the offline case: the test suite, or a household with no key.
+
+Take the `householdId` from the session (`c.get('householdId')`) in a route, or
+from the record you already hold in background work — `ensureAiReview` and
+`maybeAutoDraftOutreach` read `apartment.householdId`, so fire-and-forget
+enrichment cannot bill the wrong household.
+
+**The model comes with the config.** `LlmConfig.model` is whatever the household
+picked, validated against Anthropic's live catalogue (`listAvailableModels`) when
+it was set. Never hardcode a model id in a call — and if you add a request
+parameter that only some models support, add it to the capability filter in
+`listAvailableModels` too, or the picker will offer a model that breaks on use.
+
 Every LLM function follows the same shape, and new ones must too:
 
 1. Put the **stable** instructions in a module-scope `const` and pass them as
@@ -208,11 +226,13 @@ Every LLM function follows the same shape, and new ones must too:
    facts, the language, the requirements. Untrusted text goes through
    `untrustedBlock()`, which is also why it belongs here rather than in `system` —
    landlord-authored prose must never sit in the same block as our instructions.
-3. Check `isOffline()` → return a **deterministic offline result derived from
-   real data**, never invented filler.
-4. Call `completeJson({ system, user, schema, effort, maxTokens })`. The schema is
-   a JSON Schema with `additionalProperties: false`, enforced by the API rather
-   than hoped for; `completeJson` returns `null` on a refusal or a malformed body.
+3. Check `if (!credentials)` → return a **deterministic offline result derived
+   from real data**, never invented filler.
+4. Call `completeJson({ config: credentials, system, user, schema, effort,
+   maxTokens })`. `config` carries the household's key and chosen model. The
+   schema is a JSON Schema with `additionalProperties: false`, enforced by the
+   API rather than hoped for; `completeJson` returns `null` on a refusal or a
+   malformed body.
 5. Validate the parsed object against a Zod schema anyway — the API guarantees the
    shape, not that the contents are usable.
 6. `catch` → fall back to the offline result rather than throwing to the user.
@@ -327,9 +347,10 @@ outreach draft generic for months.
   `profiles.test.ts` deleted the live `admin` profile on every run, and
   `scraper.test.ts` inherited the real user's `maxRent`, so the suite failed
   whenever that sat below the mock listing's price of 1350.
-- **LLM calls short-circuit in tests.** `NODE_ENV=test` or a missing API key makes
-  every LLM function return its deterministic offline result, so tests need no
-  network.
+- **LLM calls short-circuit in tests.** `resolveLlmConfig` returns `null` outright
+  when `NODE_ENV=test`, and a household with no key resolves to `null` too, so
+  every LLM function returns its deterministic offline result and tests need no
+  network. Test call sites pass `null` explicitly.
 - **SSE needs a heartbeat.** `Bun.serve` has `idleTimeout: 60` set in
   `index.ts`, and `/sse` writes a ping every 15s. A silent sleep loop is not
   enough — the socket must receive bytes or the stream dies and the dashboard
