@@ -1,42 +1,88 @@
-import { describe, it, expect, afterAll } from 'bun:test';
-import { createApartment, findApartmentById, removeApartment, findMessagesByApartmentId } from '@leaseops/db';
-import { processListingAsync } from './scraper';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import {
+  createApartment,
+  findApartmentByIdUnscoped,
+  findMessagesByApartmentId,
+  upsertProfile,
+} from '@leaseops/db';
+import { processListingAsync, buildListingFromInput } from './scraper';
+import { createTestAccount, type TestAccount } from '../test-support';
 
 describe('Scraping & Enrichment Pipeline', () => {
-  const createdIds: string[] = [];
+  let account: TestAccount;
 
+  // The budget ceiling is pinned by this suite's own household profile. It used
+  // to come from whichever profile the database returned first, so these tests
+  // failed whenever the real user's `maxRent` happened to sit below the mock
+  // listing's 1350 — a failure that had nothing to do with the pipeline.
+  beforeAll(async () => {
+    account = await createTestAccount('scraper');
+    const now = new Date();
+    await upsertProfile({
+      id: crypto.randomUUID(),
+      householdId: account.householdId,
+      targetLocation: 'Madrid',
+      targetLanguage: 'Spanish',
+      autoDraftMessages: true,
+      currency: 'EUR',
+      idealRent: 1400,
+      maxRent: 2000,
+      // Scoring only considers features weighted >= 4, and `deriveSacrifices`
+      // only names shortfalls at that weight too, so an empty map would leave
+      // every listing with a score of 0 and no compromise to report.
+      spaceRequirements: {},
+      featureWeights: {
+        totalSqFt: 4,
+        naturalLight: 5,
+        elevator: 5,
+        soundproofing: 4,
+        dishwasher: 4,
+        heating: 4,
+      },
+      tenantPersona: '',
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+
+  // Deleting the household cascades to its apartments and their messages.
   afterAll(async () => {
-    for (const id of createdIds) {
-      await removeApartment(id);
-    }
+    await account.cleanup();
   });
 
   async function ingest(overrides: { price?: number; featureRatings?: Record<string, number> } = {}) {
     const now = new Date();
     const id = crypto.randomUUID();
-    // `example-` URLs make the Scrapfly + extractor services return their mocks.
+    const price = overrides.price ?? 1300;
+
+    // Listings are entered by hand now, so the fixture is a filled-in form rather
+    // than a mocked scrape. Nothing here touches the network.
+    const listing = buildListingFromInput({
+      title: 'Pipeline Test Listing',
+      description: 'Estudio de 34 m2 en el centro, exterior, sin ascensor.',
+      price,
+      currency: 'EUR',
+      floorSizeSqm: 34,
+      totalRooms: 1,
+      bathrooms: 1,
+    });
+
     const created = await createApartment({
       id,
-      url: `https://example-real-estate.com/pipeline-${id}`,
-      title: 'Pipeline Test Listing',
-      price: overrides.price ?? 1300,
+      householdId: account.householdId,
+      url: `manual:${id}`,
+      title: listing.title,
+      price,
       currency: 'EUR',
       status: 'UNPROCESSED',
+      extractedData: listing,
       createdAt: now,
       updatedAt: now,
     });
-    createdIds.push(created.id);
 
-    await processListingAsync(
-      created.id,
-      created.url,
-      undefined,
-      overrides.featureRatings,
-      undefined,
-      created.price
-    );
+    await processListingAsync(created.id, account.householdId, listing, overrides.featureRatings);
 
-    const record = await findApartmentById(created.id);
+    const record = await findApartmentByIdUnscoped(created.id);
     expect(record).toBeDefined();
     return record!;
   }
@@ -67,13 +113,24 @@ describe('Scraping & Enrichment Pipeline', () => {
     expect(scores.result.totalScore).toBe(record.mcdaScore);
   });
 
-  it('stores the extracted listing data', async () => {
+  it('stores the details that were entered', async () => {
     const record = await ingest();
 
     const ext = record.extractedData as any;
     expect(ext).toBeTruthy();
-    expect(typeof ext.title).toBe('string');
-    expect(record.rawHtml).toContain('Mock Listing Title');
+    expect(ext.title).toBe('Pipeline Test Listing');
+    expect(ext.description).toContain('Estudio');
+    expect(ext.unitMetrics.floorSizeSqm).toBe(34);
+  });
+
+  it('leaves unstated details null rather than inventing a value', async () => {
+    // A blank field means "not stated". Defaulting a bathroom count to 1 would put
+    // a fact into the scoring data that nobody supplied.
+    const listing = buildListingFromInput({ title: 'Sparse', price: 1000 });
+    expect(listing.unitMetrics.bathrooms).toBeNull();
+    expect(listing.unitMetrics.floorSizeSqm).toBeNull();
+    expect(listing.location.city).toBeNull();
+    expect(listing.description).toBe('');
   });
 
   it('honours user-supplied feature ratings over assumed defaults', async () => {
@@ -85,18 +142,25 @@ describe('Scraping & Enrichment Pipeline', () => {
     expect(soundproofing.rating).toBe(1);
   });
 
-  it('scores against the extracted price, overriding the price entered at ingestion', async () => {
-    // The mock extractor reports 1350 EUR regardless of what the user typed.
+  it('scores against the price that was entered', async () => {
+    // With manual entry the typed price is the only price, so the budget check
+    // must use it directly. The suite's household ceiling is 2000.
     const record = await ingest({ price: 9000 });
 
-    expect(record.price).toBe(1350);
-    // Budget evaluation must have used the extracted price, not the entered 9000
-    // (the default ceiling is 1500, so 9000 would have flipped this to true).
+    expect(record.price).toBe(9000);
+    expect((record.featureScores as any).result.exceedsBudget).toBe(true);
+    expect(record.status).toBe('DISQUALIFIED');
+  });
+
+  it('stays within budget for a listing under the ceiling', async () => {
+    const record = await ingest({ price: 1300 });
     expect((record.featureScores as any).result.exceedsBudget).toBe(false);
   });
 
   it('attaches a data-derived compromise summary to listings that fall short', async () => {
-    const record = await ingest({ featureRatings: { soundproofing: 1 } });
+    // Falls short on the user's own ratings — the only thing that moves a score
+    // now that nothing is inferred from the listing text.
+    const record = await ingest({ featureRatings: { soundproofing: 1, elevator: 1 } });
     const scores = record.featureScores as any;
 
     expect(record.status).toBe('DISQUALIFIED');
@@ -127,7 +191,7 @@ describe('Scraping & Enrichment Pipeline', () => {
   });
 
   it('leaves a disqualified listing without an outreach draft', async () => {
-    const record = await ingest({ featureRatings: { soundproofing: 1 } });
+    const record = await ingest({ featureRatings: { soundproofing: 1, elevator: 1 } });
     expect(record.status).toBe('DISQUALIFIED');
     expect(await findMessagesByApartmentId(record.id)).toHaveLength(0);
   });

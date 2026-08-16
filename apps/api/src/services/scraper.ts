@@ -1,160 +1,225 @@
 /**
- * Scraping Pipeline for LeaseOps.
- * Acts as a secure pipe: URL in -> Scrapfly Bypass -> Raw HTML directly to Database.
- * Zero parsing, structuring, or LLM evaluation is performed at this ingestion step.
+ * Enrichment pipeline for LeaseOps.
+ *
+ * Listings are entered by hand — you paste the description and type the figures —
+ * so there is no fetching, no anti-bot bypass and no LLM extraction step. What
+ * remains is the part that was always the point: score the listing against the
+ * household's weighted criteria, route it, and spend LLM budget only where it
+ * earns something.
+ *
+ * The pasted description is still landlord-authored text and is treated as
+ * untrusted throughout: it reaches the LLM only inside
+ * `<UNTRUSTED_LISTING_CONTENT>` boundaries, and the UI renders it as text.
  */
-import { updateApartmentEnrichment, findProfileByUsername, findFirstProfile } from '@leaseops/db';
-import { scrapeListingWithScrapfly } from './scrapfly';
-import { extractListingFromHtml } from './extractor';
-import { generateAiReview, generateCompromiseSummary } from './llm';
-import { calculateMcdaScore, type FeatureEvaluation, type McdaScoreResult } from './mcda';
-import { buildFeatureEvaluations } from './features';
+import { updateApartmentEnrichment, findProfileByHouseholdId, type ApartmentListing } from '@leaseops/db';
+import { analyseListing, generateCompromiseSummary } from './llm';
+import {
+  calculateMcdaScore,
+  deriveHighlights,
+  DEFAULT_QUALIFYING_THRESHOLD,
+  type FeatureEvaluation,
+  type McdaScoreResult,
+} from './mcda';
+import {
+  buildFeatureEvaluations,
+  buildSpaceEvaluations,
+  buildRoomQualityEvaluation,
+} from './features';
 import { enrichQualifiedLead } from './qualification';
 import { globalEvents } from './events';
-
-const QUALIFYING_THRESHOLD = 70;
 
 /** Placeholder title assigned at ingestion when the user does not supply one. */
 export const DEFAULT_TITLE = 'Apartment';
 
+/** The listing details typed into the add-listing form. */
+export interface ManualListingInput {
+  title: string;
+  description?: string;
+  price: number;
+  currency?: string;
+  floorSizeSqm?: number | null;
+  totalRooms?: number | null;
+  bathrooms?: number | null;
+  floorLevel?: string | null;
+  neighborhood?: string | null;
+  city?: string | null;
+}
+
 /**
- * Asynchronously fetches a listing's raw HTML via Scrapfly and extracts structured JSON via DeepSeek V4 Flash.
+ * Assembles the structured listing from what the user typed.
  *
- * The score produced here is provisional: it is derived from whatever the listing
- * itself states, plus any ratings the user supplied up front. The post-viewing
- * `PATCH /:id/ratings` route recomputes the authoritative score once the user has
- * rated the features themselves.
+ * Anything left blank stays `null` rather than becoming a default: a blank
+ * bathroom count means "not stated", and inventing a 1 there would put a fact
+ * into the scoring data that nobody supplied.
+ */
+export function buildListingFromInput(input: ManualListingInput): ApartmentListing {
+  const nullable = <T>(v: T | null | undefined): T | null => (v === undefined ? null : v);
+
+  return {
+    title: input.title,
+    description: input.description?.trim() || '',
+    price: { amount: input.price, currency: input.currency || 'EUR' },
+    unitMetrics: {
+      floorSizeSqm: nullable(input.floorSizeSqm),
+      totalRooms: nullable(input.totalRooms),
+      bathrooms: nullable(input.bathrooms),
+      floorLevel: input.floorLevel?.trim() || null,
+    },
+    location: {
+      neighborhood: input.neighborhood?.trim() || null,
+      city: input.city?.trim() || null,
+    },
+  };
+}
+
+/**
+ * Scores a newly entered listing and runs the post-qualification chain.
  *
- * @param apartmentId The unique ID of the apartment record in SQLite
- * @param url The URL of the listing to scrape
- * @param username Optional username to attribute the background scraping task
- * @param featureRatings Optional manual 1-5 feature ratings from user onboarding/modal
- * @param roomScores Optional manual 1-5 room evaluation scores
- * @param fallbackPrice Price the user entered at ingestion, used for budget checks when extraction finds none
- * @param userTitle Title the user typed at ingestion; a real one is never overwritten by the extracted title
+ * Fired without awaiting from the route: the scoring itself is instant, but the
+ * AI review and outreach draft are several seconds of LLM time, and the dashboard
+ * picks the result up over SSE.
+ *
+ * @param apartmentId The apartment row to enrich
+ * @param householdId The household that owns it; supplies the scoring profile
+ * @param listing The structured listing assembled from the form
+ * @param featureRatings Ratings the user gave while adding the listing
+ * @param roomScores Per-room impressions from the add-listing walkthrough
  */
 export async function processListingAsync(
   apartmentId: string,
-  url: string,
-  username?: string,
+  householdId: string,
+  listing: ApartmentListing,
   featureRatings?: Record<string, number>,
-  roomScores?: Record<string, number>,
-  fallbackPrice?: number,
-  userTitle?: string
+  roomScores?: Record<string, number>
 ): Promise<void> {
-  console.log(`[Background Queue] Starting Scrapfly WAF Bypass pipeline for ${apartmentId} (${url})`);
+  console.log(`[Enrichment] Scoring ${apartmentId}`);
+
+  // Declared at function scope because the persist step below reads them after
+  // the try. A previous version declared these inside the try and every listing
+  // landed on ERROR with a ReferenceError; `scraper.test.ts` guards that.
+  // The initialiser is the guard: this variable is read after the try, and
+  // leaving it undeclared is what made every listing land on ERROR.
+  // eslint-disable-next-line no-useless-assignment
+  let evaluations: FeatureEvaluation[] = [];
+  let mcdaResult: McdaScoreResult | null = null;
+  let compromise: { sacrifices: string[]; summary: string } | null = null;
+  // Once the score is persisted, a later failure must not replace it with ERROR:
+  // the listing is scored, and only the optional enrichment failed.
+  let scored = false;
 
   try {
-    const userProfile = username ? await findProfileByUsername(username) : await findFirstProfile();
-
-    // 1. Route URL through Scrapfly (ASP + render_js enabled) to fetch fully rendered raw HTML
-    const rawHtml = await scrapeListingWithScrapfly(url);
-
-    // 2. Invoke DeepSeek V4 Flash extraction to structure the Spanish HTML into our normalized JSON schema
-    //    `evaluations` / `mcdaResult` are declared at this scope because step 3 below
-    //    persists them alongside the extracted data.
-    let extractedData: any = null;
-    let evaluations: FeatureEvaluation[] = [];
-    let mcdaResult: McdaScoreResult | null = null;
-    let compromise: { sacrifices: string[]; summary: string } | null = null;
+    const userProfile = await findProfileByHouseholdId(householdId);
 
     const mcdaProfile = {
-      qualifyingThreshold: QUALIFYING_THRESHOLD,
+      qualifyingThreshold: userProfile?.qualifyingThreshold ?? DEFAULT_QUALIFYING_THRESHOLD,
       budgetCeiling: userProfile?.maxRent || 1500,
+      idealRent: userProfile?.idealRent,
     };
 
-    try {
-      extractedData = await extractListingFromHtml(rawHtml);
-      console.log(`[Background Queue] Successfully extracted structured JSON for ${apartmentId}`);
+    evaluations = buildFeatureEvaluations({
+      featureWeights: userProfile?.featureWeights as Record<string, unknown> | undefined,
+      featureRatings,
+    });
 
-      // Calculate the provisional MCDA score, which also decides whether an AI review is worth the API spend.
-      evaluations = buildFeatureEvaluations({
-        featureWeights: userProfile?.featureWeights as Record<string, unknown> | undefined,
-        featureRatings,
-        extractedData,
-      });
+    // The figures the user gave as numbers, scored against the listing's stated
+    // measurements, plus the room impressions. Appended as ordinary evaluations so
+    // the penalty applies to an undersized flat with no special-casing.
+    evaluations.push(
+      ...buildSpaceEvaluations(userProfile?.spaceRequirements as any, listing.unitMetrics)
+    );
+    const roomQuality = buildRoomQualityEvaluation(roomScores);
+    if (roomQuality) evaluations.push(roomQuality);
 
-      // Budget checks must never run against a phantom price of 0, or an over-budget
-      // listing whose price failed to extract would silently qualify.
-      const price = extractedData?.price?.amount || fallbackPrice || 0;
-      mcdaResult = calculateMcdaScore(evaluations, price, mcdaProfile);
+    const price = listing.price?.amount || 0;
+    mcdaResult = calculateMcdaScore(evaluations, price, mcdaProfile);
 
-      if (mcdaResult.status === 'QUALIFIED') {
-        try {
-          const aiReview = await generateAiReview(
-            extractedData.title || `Listing (${new URL(url).hostname})`,
-            price,
-            extractedData.description || rawHtml.slice(0, 5000),
-            extractedData,
-            userProfile,
-            { evaluations, result: mcdaResult }
-          );
-          extractedData.aiReview = aiReview;
-          console.log(`[Background Queue] Successfully generated AI review for ${apartmentId}`);
-        } catch (revErr: any) {
-          console.warn(`[Background Queue] AI review generation skipped or failed: ${revErr.message}`);
-        }
-      } else {
-        console.log(`[Background Queue] Skipping AI review for ${apartmentId} as it is DISQUALIFIED (Score: ${mcdaResult.totalScore}, Budget Exceeded: ${mcdaResult.exceedsBudget})`);
+    // The score is arithmetic and already final here, so it is written and
+    // broadcast BEFORE any LLM work. It used to share one write with the AI
+    // review at the end of the chain, which meant a qualifying listing sat
+    // unscored on the dashboard for as long as that call took — the calculation
+    // looked slow when what you were actually waiting for was a model.
+    await updateApartmentEnrichment(apartmentId, {
+      status: mcdaResult.status,
+      // Qualifying already spends LLM budget on a review and an outreach draft, so
+      // the listing is being pursued by definition.
+      isActive: mcdaResult.status === 'QUALIFIED',
+      mcdaScore: mcdaResult.totalScore,
+      extractedData: listing,
+      featureScores: {
+        evaluations,
+        result: mcdaResult,
+        // Derived in code and stored with the score, so it is recomputed whenever
+        // the score is and can never describe an out-of-date evaluation.
+        highlights: deriveHighlights(evaluations, mcdaResult, {
+          price,
+          budgetCeiling: mcdaProfile.budgetCeiling,
+          idealRent: mcdaProfile.idealRent,
+        }),
+      },
+    });
+    globalEvents.emit('apartmentUpdated', { id: apartmentId });
+    scored = true;
+
+    if (mcdaResult.status === 'QUALIFIED') {
+      try {
+        listing.aiReview = await analyseListing(
+          listing.title,
+          price,
+          listing.description,
+          listing,
+          userProfile,
+          { evaluations, result: mcdaResult }
+        );
+      } catch (revErr: any) {
+        console.warn(`[Enrichment] AI review failed for ${apartmentId}: ${revErr.message}`);
       }
-
-      // The compromise summary is what the user sees on a listing that fell short,
+    } else {
+      // The compromise summary is what a listing that fell short shows instead,
       // so it is generated for exactly the listings the AI review skips.
-      if (mcdaResult.status !== 'QUALIFIED') {
-        try {
-          compromise = await generateCompromiseSummary(
-            extractedData.title || `Listing (${new URL(url).hostname})`,
-            price,
-            extractedData.description || rawHtml.slice(0, 5000),
-            { evaluations, result: mcdaResult, budgetCeiling: mcdaProfile.budgetCeiling }
-          );
-        } catch (compErr: any) {
-          console.warn(`[Background Queue] Compromise summary generation failed: ${compErr.message}`);
-        }
+      try {
+        compromise = await generateCompromiseSummary(listing.title, price, listing.description, {
+          evaluations,
+          result: mcdaResult,
+          budgetCeiling: mcdaProfile.budgetCeiling,
+        });
+      } catch (compErr: any) {
+        console.warn(`[Enrichment] Compromise summary failed for ${apartmentId}: ${compErr.message}`);
       }
-    } catch (extractErr: any) {
-      console.warn(`[Background Queue] LLM extraction skipped or failed for ${apartmentId}: ${extractErr.message}`);
     }
 
-    // 3. Save raw HTML, extracted structured data and the score that goes with it
-    // Falsy (0 / missing) means extraction found no price — keep whatever the user entered.
-    const finalPrice = extractedData?.price?.amount || undefined;
-    const finalCurrency = extractedData?.price?.currency || undefined;
-    const finalStatus = extractedData && mcdaResult ? mcdaResult.status : 'ERROR';
-    // Promote the real listing title, otherwise every card reads "Apartment".
-    // A title the user typed themselves always wins.
-    const extractedTitle = typeof extractedData?.title === 'string' ? extractedData.title.trim() : '';
-    const finalTitle =
-      extractedTitle && (!userTitle || userTitle === DEFAULT_TITLE) ? extractedTitle : undefined;
-
-    await updateApartmentEnrichment(apartmentId, {
-      rawHtml,
-      title: finalTitle,
-      extractedData: extractedData ? (extractedData as any) : undefined,
-      price: finalPrice,
-      currency: finalCurrency,
-      status: finalStatus,
-      mcdaScore: mcdaResult ? mcdaResult.totalScore : undefined,
-      featureScores: mcdaResult
-        ? { evaluations, result: mcdaResult, ...(compromise ? { compromise } : {}) }
-        : undefined,
-      roomScores: roomScores || undefined,
-    });
-
-    globalEvents.emit('apartmentUpdated', { id: apartmentId, status: finalStatus });
-
-    console.log(`[Background Queue] Successfully enriched and saved data for ${apartmentId}`);
-
-    // A lead that qualifies straight out of ingestion still needs its outreach draft.
-    if (finalStatus === 'QUALIFIED') {
-      await enrichQualifiedLead(apartmentId, userProfile);
+    // Second write: only what the model produced. The score is already on the
+    // record and must not be recomputed here — `status` and `mcdaScore` are
+    // deliberately absent so a failed review can never blank a good score.
+    if (listing.aiReview || compromise) {
+      await updateApartmentEnrichment(apartmentId, {
+        extractedData: listing,
+        featureScores: {
+          evaluations,
+          result: mcdaResult,
+          highlights: deriveHighlights(evaluations, mcdaResult, {
+            price,
+            budgetCeiling: mcdaProfile.budgetCeiling,
+            idealRent: mcdaProfile.idealRent,
+          }),
+          ...(compromise ? { compromise } : {}),
+        },
+      });
     }
-  } catch (error: any) {
-    console.error(`[Background Queue] Fatal error scraping listing ${apartmentId}:`, error.message || error);
-    await updateApartmentEnrichment(apartmentId, {
-      status: 'ERROR',
-    });
-    globalEvents.emit('apartmentUpdated', { id: apartmentId, status: 'ERROR' });
+
+    console.log(`[Enrichment] ${apartmentId} -> ${mcdaResult.status} (${mcdaResult.totalScore}%)`);
+  } catch (err: any) {
+    console.error(`[Enrichment] Failed for ${apartmentId}:`, err.message);
+    if (!scored) {
+      await updateApartmentEnrichment(apartmentId, { status: 'ERROR' }).catch(() => {});
+    }
+  }
+
+  globalEvents.emit('apartmentUpdated', { id: apartmentId });
+
+  if (mcdaResult?.status === 'QUALIFIED') {
+    const userProfile = await findProfileByHouseholdId(householdId);
+    await enrichQualifiedLead(apartmentId, userProfile).catch((err) =>
+      console.warn(`[Enrichment] Post-qualification chain failed for ${apartmentId}: ${err.message}`)
+    );
   }
 }
-

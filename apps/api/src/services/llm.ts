@@ -4,14 +4,34 @@
  */
 import { z } from 'zod';
 import { AiReviewSchema, type AiReview } from '@leaseops/db';
+import { completeJson, isOffline, untrustedBlock } from './anthropic';
 
 export interface TenantPersona {
   professionAndIncome?: string;
   moveInTimeline?: string;
   householdComposition?: string;
   pets?: string;
+  /** Contract type and tenure — the strongest signal against non-payment fear. */
+  contractType?: string;
+  financialGuarantees?: string;
+  documentsReady?: string;
+  /** Intended tenure, which answers the landlord's churn worry directly. */
+  intendedLeaseLength?: string;
+  viewingAvailability?: string;
   additionalNotes?: string;
   targetLanguage?: string;
+  /**
+   * How the user signs a message — a single name or a couple ("Murad & Ana").
+   * Empty when they have not set one; the draft then ends without a signature
+   * rather than inventing a name.
+   */
+  signOffName?: string;
+  /**
+   * Per-member grammatical forms, one line each ("Murad: masculine forms").
+   * Spanish, German and French cannot write a first-person sentence without
+   * this; blank means nobody answered and the draft must avoid gendered wording.
+   */
+  writingForms?: string;
 }
 
 export const OutreachMessageSchema = z.object({
@@ -55,183 +75,264 @@ ${untrustedContent.trim()}
  * Drafts a localized outreach inquiry message for a qualified lead.
  * MUST NOT be called for disqualified listings.
  */
+/**
+ * The first message to a landlord.
+ *
+ * The design premise: in a competitive market an owner receives dozens of
+ * near-identical enquiries within hours, skims them, and screens for four things —
+ * can this person pay, will they stay, will they be a hassle, can they produce
+ * documents. A message that answers those before being asked wins. A message that
+ * compliments the flat is indistinguishable from the other fifty.
+ *
+ * So the draft is built from two grounded inputs and nothing else:
+ *
+ *   `requirements`  what THIS listing actually demands, taken from the analysis
+ *                   flags — minimum stay, aval, contract type, no pets.
+ *   `persona`       what the tenant actually told us. Never a default.
+ *
+ * Responding to a stated requirement is the whole point. "You ask for a bank
+ * guarantee — I can provide one" cannot be copy-pasted to another listing, which
+ * is precisely why it reads as real. Generic praise can, which is why it does not.
+ *
+ * Nothing is asserted that the tenant did not supply. An earlier version defaulted
+ * unfilled fields to "No pets, non-smoker" and "Stable professional", which sent
+ * invented claims about a real person to a real landlord.
+ */
+/**
+ * The tenant's own words, and nothing else. Blank stays blank — a defaulted field
+ * here becomes an invented claim sent to a real landlord, which has happened.
+ *
+ * Shared by outreach and chat replies so the two can never describe the same
+ * tenant differently.
+ */
+function buildStatedFacts(persona: TenantPersona): string {
+  const facts: [string, string | undefined][] = [
+    ['Profession and income', persona.professionAndIncome],
+    ['Employment contract', persona.contractType],
+    ['Financial guarantees available', persona.financialGuarantees],
+    ['Documents ready to send', persona.documentsReady],
+    ['Household', persona.householdComposition],
+    ['Pets and smoking', persona.pets],
+    ['Move-in timing', persona.moveInTimeline],
+    ['Intended length of stay', persona.intendedLeaseLength],
+    ['Available to view', persona.viewingAvailability],
+    ['Other', persona.additionalNotes],
+  ];
+  return facts
+    .filter(([, v]) => v && v.trim().length > 0)
+    .map(([k, v]) => `- ${k}: ${v!.trim()}`)
+    .join('\n');
+}
+
+const OUTREACH_RULES = `You are the prospective tenant, writing the first message about a flat you want to see. You are not a copywriter and this is not an advertisement. Write the way a competent adult writes a short practical message.
+
+WHY THIS IS HARD
+The owner will receive dozens of near-identical messages today and will skim yours in a few seconds. They are deciding one thing: is this person worth replying to. They screen for whether you can pay, whether you will stay, whether you will be a nuisance, and whether you can produce paperwork without being chased.
+
+HOW TO WRITE IT
+1. Where this listing states a requirement and the tenant facts show it is met, say so plainly and early. This is the most valuable thing in the message, because it proves the listing was read and removes the owner's doubt in one line. Respond to the requirement in your own words; do not quote the advert back.
+2. Never claim a requirement is met unless the tenant facts above show it, and never phrase anything so it could be read that way.
+2a. Where a requirement is not met and the owner would find out anyway — pets, who is moving in, being self-employed — state the true position plainly in a few words, then give the strongest relevant fact the tenant does have. Hiding it wastes a viewing and collapses at signing. Do not apologise, do not argue with the requirement, and do not pad it with reassurance.
+2b. Where the tenant covers PART of what is asked — the listing wants two months of guarantee and the tenant facts state one, or a guarantor is still being arranged — name precisely what the facts say can be put up now, then offer to settle the remainder with the owner directly. Concrete amount first, willingness second. A bare "I'm flexible on the terms" is worthless: it commits to nothing and every other applicant writes it. Never imply the full requirement is already covered.
+2b-i. This rule only applies when the tenant facts above actually state a financial offer. If they state none, say nothing about deposits, guarantees, guarantors or upfront payment — do not produce a partial offer out of nothing.
+3. Use only the stated tenant facts. Invent nothing: no income, no contract, no references, no dates that are not listed above.
+3-ii. The requirements list is the most dangerous source of invention in this prompt. When the tenant facts are sparse, there is a strong pull to answer the owner point by point and produce a tenant who happens to satisfy everything asked. Resist it completely. A requirement with no matching tenant fact is simply not addressed. If that leaves a two-line message, send the two-line message.
+3-i. Absence is not an invitation. If a subject does not appear in the tenant facts — employment, income, deposit, guarantee, documents, pets, smoking, household, tenure — the message must not mention that subject at all, in any form. Do not reason about what a tenant like this probably has, do not fill a gap because the listing asks about it, and do not reuse a number or an arrangement that appears anywhere in these instructions. Every figure and commitment in your message must be traceable to a line under WHAT THE TENANT HAS ACTUALLY STATED. A short message built from three real facts beats a complete-looking one built from eight invented ones — the invented version collapses the moment documents are requested.
+3a. The profession, contract and income belong to the person writing, and to nobody else. If the household has other adults, never attribute a job, a salary or a contract to them — say "we are two adults" and keep the employment details in the first person singular.
+3b. State offers exactly as given. If the tenant can provide one thing OR another, write it as a choice; never merge them into both, never upgrade an offer, and never restate an amount as something it is not.
+3b-i. Never mention paying the first month's rent. Every tenant pays it, so offering it reads as padding and makes the rest of the message look thinner. The same goes for any other ordinary obligation dressed up as a concession.
+3c. A condition attached to a fact travels with the fact, always. If income, hours or a contract depend on something pending — a visa, a probation period, a start date — say so in the same breath. A future salary quoted without its condition reads as invention, and the condition usually explains the number and makes it credible.
+3d. Where the tenant's own wording is ambiguous, use their words rather than resolving it into a legal term. Never upgrade "permanent contract, for 1 year" into "contrato indefinido", "fijo" or any equivalent — those are terms an owner will check against the document, and guessing wrong is caught at exactly the moment trust matters. If the ambiguity cannot be avoided, state the plain shared meaning and no more.
+3e. Facts about the tenant's legal right to work or reside — visa status, permits in process — are material and must never be dropped for brevity. The owner will see the NIE.
+3f. Write about each person in the grammatical form given under HOW TO WRITE ABOUT EACH PERSON. Spanish, German and French force a choice on almost every self-description ('vivo solo' / 'vivo sola', 'enfermero' / 'enfermera'), and the correct form is a fact about the sender, not a style preference. Never infer it from a first name, and never infer it from the profession — a nurse is not therefore female and an architect is not therefore male. This is the single most common error in this task: check the listed form for each person immediately before writing any word that inflects, and apply it to the person, not to whatever noun happens to be nearest. Where a person is listed as avoiding grammatical gender, or is not listed at all, rephrase so the question does not arise rather than falling back to the masculine default. For two people writing together, use the plural your target language requires for that combination.
+4. No compliments about the property, the building or the area. Do not write that it looks lovely, ideal, perfect, charming, or that it suits you especially well. Do not tell them their flat is nice — they know, and everyone else says it.
+5. No filler. The message ends on the viewing question or the sign-off — nothing after it. Cut every variant of "I look forward to hearing from you", "I await your reply", "thanks in advance", "I hope this message finds you well". In Spanish this specifically means never writing "quedo a la espera de su respuesta", "quedamos a la espera", or "gracias de antemano".
+6. Do not describe yourself with adjectives like ideal, perfect, responsible, reliable or serious. State facts and let them speak. Concrete behaviour is a fact and belongs in the message — "no parties or guests" and "we both work from home" tell an owner something checkable; "we are quiet and respectful" tells them nothing.
+6a. Keep specifics that make a guarantee credible. "My parents will act as guarantors and can provide their bank statements" is materially stronger than "I can provide bank statements", and the difference is exactly what the owner is assessing.
+6b. Say who the other occupants are and what they do, in a few words. "Two adults" alone invites the question the message exists to pre-empt.
+7. Close by proposing a viewing, using the stated availability if there is one. Ask no questions about the property. The one thing this message is for is getting seen in person, and every question you add is a reason for the owner to answer later instead of booking you now. Anything you need to know about cupboards, appliances or fittings is answered by standing in the flat. End by asking for a viewing and nothing else.
+8. Under 110 words. Shorter is better. No bullet lists, no headings.
+9. Sign off with exactly the SIGN-OFF given below. If it says NONE, end without a name and never invent one..
+10. Write in the LANGUAGE given below, in the register a native speaker would actually use for a rental enquiry. Not a cover letter. Hold one level of formality throughout — do not mix formal and informal address in the same message.
+
+SUBJECT LINE
+Plain and human, under about eight words. The owner already knows what their flat looks like, so do not describe it back to them: identify it briefly (street, area or type) and add ONE fact about the tenant that separates this message from the pile. Never a list of keywords.`;
+
+const OUTREACH_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['subject', 'body'],
+  properties: { subject: { type: 'string' }, body: { type: 'string' } },
+} as const;
+
 export async function draftOutreachMessage(
   listingTitle: string,
   scrapedDescription: string,
   persona: TenantPersona,
-  aiReview?: any,
-  featureScores?: any
+  analysis?: { flags?: Array<{ issue: string; quote: string }>; unknowns?: Array<{ feature: string; ask: string }> }
 ): Promise<OutreachMessage> {
   const language = persona.targetLanguage || 'English';
-  
-  const baseInstruction = `Role & Objective
-You are an expert real estate negotiator and persuasive copywriter. Your objective is to write highly converting, concise initial outreach messages to property owners or leasing agents. The ultimate goal of the message is to secure a property viewing by aggressively eliminating the landlord's perception of risk.
 
-Psychological Core
-Property owners are driven by risk mitigation, not just high rent. They fear:
-1. Non-payment (income instability)
-2. Property damage (bad lifestyle habits)
-3. Churn (short-term stays)
-4. Administrative headaches (needy tenants)
-You do not ask for favors; you present a highly attractive, secure proposition.
+  const statedFactCount = [
+    persona.professionAndIncome, persona.contractType, persona.financialGuarantees,
+    persona.documentsReady, persona.householdComposition, persona.pets,
+    persona.moveInTimeline, persona.intendedLeaseLength, persona.viewingAvailability,
+    persona.additionalNotes,
+  ].filter((v) => v && v.trim().length > 0).length;
 
-Tone Constraints
-- Professional & Assured (Not begging or desperate)
-- Direct & Unapologetic (You know your value as a tenant)
-- Concise (Under 150 words. Do not waste their time)
-- Language: MUST be written in ${language}.
+  /**
+   * The owner's requirements are withheld when the tenant has stated too little
+   * to answer them.
+   *
+   * Three separate prompt rules failed to stop this: given a requirements list
+   * and a near-empty persona, the model reliably answers the list point by point
+   * and invents a tenant who satisfies it — a permanent contract, income over
+   * three times the rent, documents, no pets, none of it supplied. Removing the
+   * list removes the material it was inventing from, which prose could not.
+   *
+   * A tenant with two facts has nothing to negotiate with anyway; their message
+   * is an introduction and a request to view.
+   */
+  const MIN_FACTS_FOR_REQUIREMENTS = 4;
+  const requirements =
+    statedFactCount >= MIN_FACTS_FOR_REQUIREMENTS
+      ? (analysis?.flags || []).map((f) => f.issue)
+      : [];
 
-Input Variables:
-- Target property: ${listingTitle}
-- Profession and Income: ${persona.professionAndIncome || 'Stable professional'}
-- Desired move-in date: ${persona.moveInTimeline || 'Flexible but immediate upon inspection'}
-- Household: ${persona.householdComposition || 'Single professional'}
-- Pets/Smoking: ${persona.pets || 'No pets, non-smoker'}
-- Additional Notes: ${persona.additionalNotes || 'Excellent references'}
+  const statedFacts = buildStatedFacts(persona);
 
-Apartment Context (Use this to personalize the message):
-${aiReview ? `- Pros: ${aiReview.pros?.join(', ')}` : ''}
-${aiReview ? `- Cons: ${aiReview.cons?.join(', ')}` : ''}
-${featureScores ? `- Feature Scores: ${JSON.stringify(featureScores)}` : ''}
+  const requirementsBlock = requirements.length
+    ? `WHAT THIS LISTING ASKS FOR\nThis is what the OWNER wants. It is not a form to fill in and not a description of the tenant. Answer a line only where the tenant facts below independently satisfy it.\n${requirements.map((r) => `- ${r}`).join('\n')}`
+    : `WHAT THIS LISTING ASKS FOR\nNot provided. Write only from the tenant facts below and ask for a viewing.`;
 
-Output Structure Framework
-1. Direct Hook: State exactly which property you want and your desired move-in timeline.
-2. Risk Neutralizer: Immediately state your financial proof strategy and profession.
-3. Lifestyle Fit: Briefly confirm your household size and quiet/respectful habits (pets/smoking status).
-4. Compliment / Detail: Mention one specific positive detail about the property (infer this from the Apartment Context or Description) to prove this is not a mass-blast message. Use the Pros to find a detail.
-5. Low-Friction CTA: End with a simple yes/no question proposing a viewing time or next step.
-
-Output valid JSON matching { "subject": string, "body": string, "language": string }.`;
-
-  const systemPrompt = buildSecureSystemPrompt(baseInstruction, scrapedDescription);
-
-  const apiKey = Bun.env.DEEPSEEK_API_KEY || Bun.env.OPENAI_API_KEY;
-  const isTestOrOffline = Bun.env.NODE_ENV === 'test' || !apiKey || apiKey.trim().length === 0;
-
-  if (isTestOrOffline) {
+  if (isOffline()) {
     console.log(`[LLM Service] Using offline stub for outreach message generation.`);
-    const stubResult = {
-      subject: `Viewing Request: ${listingTitle}`,
-      body: `Hello,\n\nI am reaching out regarding ${listingTitle} for a move-in around ${persona.moveInTimeline || 'soon'}. I am a ${persona.professionAndIncome || 'professional'} with excellent references.\n\nI noted the nice details in your listing and would love to view the property. Could we arrange a viewing this week?\n\nBest regards.`,
-      language: language,
-    };
-    return OutreachMessageSchema.parse(stubResult);
+    const lines = [
+      `Hello,`,
+      ``,
+      `I am interested in ${listingTitle} and would like to arrange a viewing.`,
+      ...(persona.professionAndIncome ? [``, persona.professionAndIncome.trim()] : []),
+      ...(persona.financialGuarantees ? [persona.financialGuarantees.trim()] : []),
+      ...(persona.viewingAvailability ? [``, `I can view: ${persona.viewingAvailability.trim()}`] : []),
+      ``,
+      `Best regards${persona.signOffName?.trim() ? `,\n${persona.signOffName.trim()}` : '.'}`,
+    ];
+    return OutreachMessageSchema.parse({
+      subject: `Viewing request: ${listingTitle}`,
+      body: lines.join('\n'),
+      language,
+    });
   }
 
-  const model = Bun.env.DEEPSEEK_MODEL || 'deepseek-chat';
-  console.log(`[LLM Service] Invoking DeepSeek API (${model}) for Outreach Message...`);
-  
-  const response = await fetch('https://api.deepseek.com/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey.trim()}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Please draft the outreach message based on the provided instructions and listing details.` },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.4,
-    }),
+  const result = await completeJson<{ subject: string; body: string }>({
+    system: OUTREACH_RULES,
+    user: `${untrustedBlock(scrapedDescription || listingTitle)}
+
+TARGET PROPERTY: ${listingTitle}
+LANGUAGE: ${language}
+SIGN-OFF: ${persona.signOffName?.trim() || 'NONE'}
+
+${requirementsBlock}
+
+WHAT THE TENANT HAS ACTUALLY STATED
+${statedFacts || '- Nothing beyond wanting to view the property.'}
+
+
+HOW TO WRITE ABOUT EACH PERSON — this overrides any assumption the facts above invite
+${persona.writingForms?.trim() || 'Not stated. Avoid wording that requires grammatical gender.'}
+
+Write the message.`,
+    schema: OUTREACH_SCHEMA,
+    effort: 'low',
+    maxTokens: 6000,
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.warn(`[LLM Service] DeepSeek API outreach generation error (${response.status}): ${errorText}.`);
-    throw new Error(`Failed to generate outreach message: ${response.statusText}`);
+  if (!result) throw new Error('Failed to generate outreach message');
+
+  const validated = OutreachMessageSchema.parse({ ...result, language });
+
+  // The prompt asks for the sign-off and the model sometimes drops it, leaving a
+  // message that ends mid-air. Enforced here rather than hoped for — but only
+  // ever with the real name, never an invented one.
+  const signOff = persona.signOffName?.trim();
+  if (signOff && !validated.body.includes(signOff)) {
+    validated.body = `${validated.body.trimEnd()}\n\n${signOff}`;
   }
 
-  const data = await response.json();
-  const rawJsonString = data.choices?.[0]?.message?.content;
-  if (!rawJsonString) {
-    throw new Error('DeepSeek API returned empty response content for outreach message.');
-  }
-
-  try {
-    const parsedJson = JSON.parse(rawJsonString);
-    const validatedMessage = OutreachMessageSchema.parse(parsedJson);
-    console.log(`[LLM Service] Successfully generated DeepSeek Outreach Message for ${listingTitle}`);
-    return validatedMessage;
-  } catch (err: any) {
-    console.error('[LLM Service] Failed to validate DeepSeek JSON for outreach message:', err.message);
-    throw new Error(`Outreach Message JSON validation failed: ${err.message}`);
-  }
+  return validated;
 }
+
+const CHAT_REPLY_RULES = `You are the tenant, replying to a landlord in an ongoing conversation about a flat you want.
+
+Write about each person in the grammatical form given under HOW TO WRITE ABOUT EACH PERSON. Never infer it from a name or a profession. Where someone avoids grammatical gender or is not listed, rephrase so the question does not arise rather than defaulting to the masculine.
+
+Answer what was actually asked, in order, and stop. This is a reply, not a fresh pitch — do not reintroduce yourself, do not restate what you already said earlier in the thread, and do not close with a summary of your own suitability.
+
+Every fact you state must come from the tenant facts given below or from the tenant's own earlier messages in this thread. If the landlord asks for something the facts do not cover — an amount, a document, a date, an employment detail — say plainly what you can do and leave the rest for them to confirm. Never invent a figure, a document, a contract type or a date, and never let a question about a subject become an answer implying you have it. If the tenant facts are silent on it, you do not have it.
+
+Where you can cover part of what is asked, name the exact part the facts support and offer to settle the remainder directly. Never imply the whole request is covered.
+
+Tone: plain, direct, unhurried. No flattery about the property, no eagerness, no apologising. Under 90 words. Reply in the LANGUAGE given below.`;
+
+const CHAT_REPLY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['text'],
+  properties: { text: { type: 'string' } },
+} as const;
 
 export async function suggestChatReply(
   listingTitle: string,
   chatHistory: { sender: string; text: string }[],
   persona: TenantPersona,
-  aiReview?: any,
-  featureScores?: any
+  _aiReview?: any,
+  _featureScores?: any
 ): Promise<{ text: string }> {
   const language = persona.targetLanguage || 'English';
   
   const formattedHistory = chatHistory.map(m => `${m.sender.toUpperCase()}: ${m.text}`).join('\n\n');
 
-  const systemPrompt = `You are an expert real estate negotiator acting on behalf of a tenant.
-Your goal is to suggest the next best strategic reply to the landlord in a chat conversation.
+  const statedFacts = buildStatedFacts(persona);
 
-Tone: Professional, direct, polite, risk-neutralizing.
-Language: MUST be written in ${language}.
-
-Context:
-Target property: ${listingTitle}
-Profession: ${persona.professionAndIncome || 'Stable professional'}
-Move-in timeline: ${persona.moveInTimeline || 'Flexible'}
-${aiReview ? `Property Pros: ${aiReview.pros?.join(', ')}` : ''}
-${aiReview ? `Property Cons: ${aiReview.cons?.join(', ')}` : ''}
-
-Chat History:
-${formattedHistory}
-
-Provide ONLY the text of the suggested reply. Output JSON format: { "text": "your suggested reply..." }`;
-
-  const apiKey = Bun.env.DEEPSEEK_API_KEY || Bun.env.OPENAI_API_KEY;
-  const isTestOrOffline = Bun.env.NODE_ENV === 'test' || !apiKey || apiKey.trim().length === 0;
-
-  if (isTestOrOffline) {
-    return { text: `Thank you for the update! I can provide all necessary documentation (ID, proof of income). Please let me know the next steps.` };
+  if (isOffline()) {
+    return {
+      text: 'Thank you for the update. Please let me know the next steps and I will arrange things from my side.',
+    };
   }
 
-  const model = Bun.env.DEEPSEEK_MODEL || 'deepseek-chat';
-  
-  const response = await fetch('https://api.deepseek.com/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey.trim()}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'system', content: systemPrompt }],
-      response_format: { type: 'json_object' },
-      temperature: 0.3,
-    }),
+  const result = await completeJson<{ text: string }>({
+    system: CHAT_REPLY_RULES,
+    user: `TARGET PROPERTY: ${listingTitle}
+LANGUAGE: ${language}
+SIGN-OFF: ${persona.signOffName?.trim() || 'NONE'}
+
+HOW TO WRITE ABOUT EACH PERSON
+${persona.writingForms?.trim() || 'Not stated. Avoid wording that requires grammatical gender.'}
+
+WHAT THE TENANT HAS ACTUALLY STATED
+${statedFacts || '- Nothing beyond wanting to view the property.'}
+
+CONVERSATION SO FAR
+${untrustedBlock(formattedHistory)}
+
+Write the tenant's next reply.`,
+    schema: CHAT_REPLY_SCHEMA,
+    effort: 'low',
+    maxTokens: 4000,
   });
 
-  if (!response.ok) {
-    throw new Error(`Failed to generate chat reply: ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  const rawJsonString = data.choices?.[0]?.message?.content;
-  if (!rawJsonString) throw new Error('Empty response content');
-
-  try {
-    const parsed = JSON.parse(rawJsonString);
-    return { text: parsed.text || parsed.body || 'Could not parse text.' };
-  } catch (err: any) {
-    throw new Error(`JSON validation failed: ${err.message}`);
-  }
+  if (!result?.text?.trim()) throw new Error('Failed to generate chat reply');
+  return { text: result.text.trim() };
 }
 
 export interface CompromiseContext {
   evaluations?: Array<{ featureId: string; name: string; weight: number; rating: number }>;
-  result?: { totalScore: number; exceedsBudget: boolean; dealbreakerReasons: string[] };
+  result?: {
+    totalScore: number;
+    exceedsBudget: boolean;
+    dealbreakerReasons: string[];
+    criticalShortfalls?: Array<{ name: string; rating: number; pointsLost: number }>;
+  };
   budgetCeiling?: number;
 }
 
@@ -253,13 +354,23 @@ function deriveSacrifices(price: number, context?: CompromiseContext): string[] 
     sacrifices.push(`Costs ${over} over your ${Math.round(budgetCeiling)} ceiling (listed at ${Math.round(price)}).`);
   }
 
-  for (const reason of result?.dealbreakerReasons || []) {
-    sacrifices.push(reason);
+  // Critical shortfalls come first and carry their point cost, so the number on
+  // the card can be traced to a named feature rather than taken on faith.
+  for (const shortfall of result?.criticalShortfalls || []) {
+    sacrifices.push(
+      `${shortfall.name} scored ${shortfall.rating}/5 on a non-negotiable, costing ${shortfall.pointsLost} points.`
+    );
+  }
+  if (!result?.criticalShortfalls) {
+    for (const reason of result?.dealbreakerReasons || []) {
+      sacrifices.push(reason);
+    }
   }
 
   // Surface the features that cost the listing the most points, heaviest first.
   const shortfalls = evaluations
-    .filter((e) => e.rating < 4 && e.weight >= 4)
+    // Weight-5 shortfalls are already named above with their exact cost.
+    .filter((e) => e.rating < 4 && e.weight >= 4 && !(e.weight >= 5 && e.rating < 3))
     .sort((a, b) => b.weight * (5 - b.rating) - a.weight * (5 - a.rating));
 
   for (const feat of shortfalls) {
@@ -280,10 +391,21 @@ function deriveSacrifices(price: number, context?: CompromiseContext): string[] 
  * The sacrifices are always derived from the MCDA evaluation rather than invented;
  * the LLM, when configured, only rewrites those facts into a blunt summary line.
  */
+/**
+ * Why a listing fell short, derived entirely from its MCDA result.
+ *
+ * **This costs nothing.** It used to call DeepSeek on every listing that failed to
+ * qualify — the majority of them — purely to reword a sentence already assembled
+ * in code. The sacrifices were always the measured ones; the model only made the
+ * wrapper prose prettier, at the price of an API call per rejected flat.
+ *
+ * Listings you are not pursuing now spend zero credits. The budget goes to
+ * `analyseListing`, which runs only on the ones you are.
+ */
 export async function generateCompromiseSummary(
   listingTitle: string,
   price: number,
-  scrapedDescription: string,
+  _description: string,
   context?: CompromiseContext
 ): Promise<CompromiseSummary> {
   const sacrifices = deriveSacrifices(price, context);
@@ -292,283 +414,128 @@ export async function generateCompromiseSummary(
   if (sacrifices.length === 0) {
     return CompromiseSummarySchema.parse({
       sacrifices: [],
-      summary: `No specific trade-offs were detected for ${listingTitle} from the listing data. Rate the features after a viewing for a sharper picture.`,
+      summary: `No specific trade-offs were measured for ${listingTitle}. Rate its features after a viewing for a sharper picture.`,
     });
   }
 
-  const factualSummary = `${listingTitle} falls short on ${sacrifices.length} ${
+  const summary = `${listingTitle} falls short on ${sacrifices.length} ${
     sacrifices.length === 1 ? 'point' : 'points'
-  } against your profile${
-    context?.result ? ` (score ${context.result.totalScore}%)` : ''
   }: ${sacrifices.join(' ')}`;
 
-  const apiKey = Bun.env.DEEPSEEK_API_KEY || Bun.env.OPENAI_API_KEY;
-  const isTestOrOffline = Bun.env.NODE_ENV === 'test' || !apiKey || apiKey.trim().length === 0;
-
-  if (isTestOrOffline) {
-    console.log('[LLM Service] Using derived compromise summary (no LLM configured).');
-    return CompromiseSummarySchema.parse({ sacrifices, summary: factualSummary });
-  }
-
-  const systemPrompt = buildSecureSystemPrompt(
-    `You are LeaseOps AI. The following shortfalls were measured against the user's own weighted criteria for "${listingTitle}" at a price of ${price}:
-${sacrifices.map((s, i) => `${i + 1}. ${s}`).join('\n')}
-
-Write a blunt, two-sentence summary of what the user gives up by choosing this unit. Use ONLY the shortfalls listed above — do not introduce any trade-off that is not listed, and do not soften them. Output valid JSON matching { "sacrifices": string[], "summary": string } where "sacrifices" repeats the shortfalls above verbatim.`,
-    scrapedDescription
-  );
-
-  const model = Bun.env.DEEPSEEK_MODEL || 'deepseek-chat';
-
-  try {
-    const response = await fetch('https://api.deepseek.com/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey.trim()}`,
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: 'Summarize the compromises based strictly on the measured shortfalls.' },
-        ],
-        response_format: { type: 'json_object' },
-        temperature: 0.3,
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`DeepSeek compromise summary error (${response.status})`);
-    }
-
-    const data = await response.json();
-    const rawJsonString = data.choices?.[0]?.message?.content;
-    if (!rawJsonString) throw new Error('Empty response content for compromise summary.');
-
-    const parsed = CompromiseSummarySchema.parse(JSON.parse(rawJsonString));
-    // The measured shortfalls are authoritative; only the prose comes from the model.
-    return { sacrifices, summary: parsed.summary };
-  } catch (err: any) {
-    console.warn(`[LLM Service] Falling back to derived compromise summary: ${err.message}`);
-    return CompromiseSummarySchema.parse({ sacrifices, summary: factualSummary });
-  }
+  return CompromiseSummarySchema.parse({ sacrifices, summary });
 }
 
+
 /**
- * Generates a structured 3-pro, 3-con AI Review and recommendation using DeepSeek V3 / V4-Pro intelligence.
- * Synthesizes exact spatial/financial metrics, location data, and user RevOps criteria.
+ * Stable rules for `analyseListing`. Module-scope and free of per-listing content
+ * so the cached prefix is byte-identical on every request — any interpolation
+ * here would invalidate the cache for every listing.
  */
-export async function generateAiReview(
+const ANALYSIS_RULES = `You read one rental listing description on behalf of a specific tenant and report two things. You do not evaluate, score, summarise or advise — other parts of the system already do that from measured data.
+
+ABSOLUTE RULE
+You know nothing about this city, neighbourhood, local rents, transport links or comparable properties. Never characterise an area and never compare this listing to any other. Everything you output must come from the listing text itself.
+
+TASK 1 — flags
+Conditions stated in the listing that a feature checklist cannot represent and that affect whether this tenant can or should take the flat. Typically: minimum stay, deposit and guarantee demands, agency or admin fees, tenant restrictions (employment type, pets, sharing, students), residency or registration conditions, excluded charges such as community fees or utilities, who the landlord is, anything else unusual or restrictive.
+Each flag needs "quote" copied EXACTLY, character for character, from the description. Do not translate, trim or tidy the quote. If you cannot copy an exact quote, omit the flag.
+State the issue in English even when the quote is not.
+
+TASK 2 — unknowns
+From the list of things the tenant cares about and has NOT yet assessed, report only those the description genuinely never addresses, each with one short, specific question to put to the landlord. If the description does address it, leave it out. Never report a feature that is not on that list.
+
+Both arrays may be empty, and empty is the correct answer when there is nothing to report. Never pad, never invent, never repeat a point.`;
+
+/** Structured-output schema. Every object needs additionalProperties:false. */
+const ANALYSIS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['flags', 'unknowns'],
+  properties: {
+    flags: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['issue', 'quote'],
+        properties: { issue: { type: 'string' }, quote: { type: 'string' } },
+      },
+    },
+    unknowns: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['feature', 'ask'],
+        properties: { feature: { type: 'string' }, ask: { type: 'string' } },
+      },
+    },
+  },
+} as const;
+
+export async function analyseListing(
   listingTitle: string,
   price: number,
-  scrapedDescription?: string,
-  extractedData?: any,
+  description: string,
+  extractedData: any,
   userProfile?: any,
-  featureScores?: any,
-  forceFallback = false
+  featureScores?: any
 ): Promise<AiReview> {
-  const ext = extractedData || {};
-  const areaSqm = ext.unitMetrics?.floorSizeSqm ?? ext.areaSqm ?? ext.floorSizeSqm ?? 'unknown';
-  const pricePerSqm = typeof areaSqm === 'number' && areaSqm > 0 ? (price / areaSqm).toFixed(1) : 'unknown';
-  const totalRooms = ext.unitMetrics?.totalRooms ?? ext.roomsTotal ?? ext.totalRooms ?? 'unknown';
-  const bathrooms = ext.unitMetrics?.bathrooms ?? ext.bathrooms ?? 'unknown';
-  const floorLevel = ext.unitMetrics?.floorLevel ?? ext.floorLevel ?? 'unknown';
-  const neighborhood = ext.location?.neighborhood ?? 'the local area';
-  const city = ext.location?.city ?? 'the city';
-  const isFurnished = ext.features?.isFurnished ?? false;
-  const hasElevator = ext.features?.hasElevator ?? false;
-  const heatingType = ext.features?.heatingType ?? 'standard';
-  const buildYear = ext.features?.buildYear ?? 'unknown';
+  const evaluations: any[] = featureScores?.evaluations || [];
 
-  // 1. Analyze MCDA Feature Scores and Dealbreakers from featureScores (if present)
-  const evaluations: any[] = (featureScores as any)?.evaluations || [];
-  const dealbreakers: string[] = [];
-  const lowRatedFeatures: string[] = [];
-  const highRatedFeatures: string[] = [];
+  // Features worth asking about: weighted highly AND not yet assessed by the user.
+  // A feature they already rated is not an open question — they have looked at it.
+  const openFeatureNames = evaluations
+    .filter(
+      (e) =>
+        e.weight >= 4 &&
+        !e.featureId.startsWith('__') &&
+        !e.notes?.toLowerCase().includes('rated by you')
+    )
+    .map((e) => e.name);
 
-  for (const evalItem of evaluations) {
-    if (evalItem.weight >= 4 && evalItem.rating <= 2) {
-      dealbreakers.push(`${evalItem.name} (Rated ${evalItem.rating}/5, Weight ${evalItem.weight}/5)`);
-    } else if (evalItem.rating <= 2) {
-      lowRatedFeatures.push(`${evalItem.name} (Rated ${evalItem.rating}/5)`);
-    } else if (evalItem.rating >= 4 && evalItem.weight >= 4) {
-      highRatedFeatures.push(`${evalItem.name} (Rated ${evalItem.rating}/5, Weight ${evalItem.weight}/5)`);
-    }
-  }
+  /** Nothing was read, so nothing is claimed. */
+  const unread = (): AiReview => AiReviewSchema.parse({ flags: [], unknowns: [], analysed: false });
 
-  // 2. Also check extractedData against userProfile weights if featureScores wasn't explicit
-  let profileContext = '';
-  if (userProfile) {
-    const maxRent = userProfile.maxRent ?? 'none';
-    const idealRent = userProfile.idealRent ?? 'none';
-    const weights = userProfile.featureWeights || {};
-    const topPriorities = Object.entries(weights)
-      .filter(([_, weight]) => weight === 5)
-      .map(([feat]) => feat)
-      .join(', ');
-    const highPriorities = Object.entries(weights)
-      .filter(([_, weight]) => weight === 4)
-      .map(([feat]) => feat)
-      .join(', ');
-    profileContext = `
-User RevOps Profile & MCDA Criteria:
-- Target Budget: Ideal €${idealRent}/mo, Ceiling €${maxRent}/mo (Current Listing: €${price}/mo)
-- Non-Negotiables (Rated 5/5 Importance): ${topPriorities || 'Standard quality living space'}
-- Strong Preferences (Rated 4/5 Importance): ${highPriorities || 'Modern amenities and good location'}
-`;
-    if (weights.elevator >= 4 && !hasElevator && !dealbreakers.some(d => d.toLowerCase().includes('elevator'))) {
-      dealbreakers.push(`Elevator Access (Missing in listing, your importance weight: ${weights.elevator}/5)`);
-    }
-    if (weights.dishwasher >= 4 && ext.features?.hasDishwasher === false && !dealbreakers.some(d => d.toLowerCase().includes('dishwasher'))) {
-      dealbreakers.push(`Dishwasher (Not found/rated low, your importance weight: ${weights.dishwasher}/5)`);
-    }
-    if (userProfile.maxRent && price > userProfile.maxRent) {
-      dealbreakers.push(`Monthly Rent (€${price}) exceeds your budget ceiling of €${userProfile.maxRent}`);
-    }
-  }
+  if (isOffline() || !description.trim()) return unread();
 
-  const dealbreakerSection = dealbreakers.length > 0
-    ? `CRITICAL DEALBREAKERS & FAILURES FOR THIS USER:
-The following features failed the user's non-negotiable or high importance thresholds:
-- ${dealbreakers.join('\n- ')}
-You MUST explicitly mention and analyze these failed dealbreakers in the Cons (Compromise Summary) and address how to handle or inspect them in the Recommendation!`
-    : `No critical dealbreakers failed. Focus on subtle architectural trade-offs.`;
+  const analysis = await completeJson<{ flags?: any[]; unknowns?: any[] }>({
+    system: ANALYSIS_RULES,
+    user: `${untrustedBlock(description)}
 
-  const highRatedSection = highRatedFeatures.length > 0
-    ? `USER'S HIGHEST RATED MATCHES ON THIS PROPERTY:
-- ${highRatedFeatures.join('\n- ')}
-You MUST highlight these specific verified matches in the Pros (Key Advantages).`
-    : '';
+THINGS THIS TENANT CARES ABOUT AND HAS NOT YET ASSESSED
+${openFeatureNames.length ? openFeatureNames.join(', ') : '(none)'}
 
-  const systemPrompt = buildSecureSystemPrompt(
-    `You are LeaseOps AI, acting as a Senior RevOps Real Estate Inspector and Architectural Analyst using DeepSeek V4-Pro intelligence.
-Your task is to provide an analytical, highly relevant, and blunt real estate evaluation of this property for the prospective tenant.
-
-Property Metrics:
-- Title: ${listingTitle}
-- Price: €${price}/month (${typeof pricePerSqm === 'string' ? pricePerSqm : '€' + pricePerSqm + '/m²'})
-- Size: ${areaSqm} m², Rooms: ${totalRooms}, Bathrooms: ${bathrooms}
-- Floor Level: ${floorLevel} (Elevator: ${hasElevator ? 'Yes' : 'No'})
-- Location: ${neighborhood}, ${city}
-- Furnished: ${isFurnished ? 'Yes' : 'No'}, Heating: ${heatingType}, Build Year: ${buildYear}
-${profileContext}
-${dealbreakerSection}
-${highRatedSection}
-
-Evaluation Rules:
-1. Pros (Key Advantages): Provide exactly 3 bullet points highlighting specific structural, locational, or financial advantages based on the actual metrics and verified matches.
-2. Cons (Compromise Summary & Sacrifices): Provide exactly 3 bullet points bluntly identifying realistic compromises or trade-offs. If there are CRITICAL DEALBREAKERS OR FAILURES listed above, you MUST explicitly detail them here as the primary compromises!
-3. Recommendation (Action Verdict): Provide a concrete 2-3 sentence verdict on whether to pursue this lead. If there is a failed dealbreaker or low-rated feature, tie your inspection questions directly to investigating solutions, workarounds, or landlord flexibility for that specific deficit! Never mention boilerplate acoustic insulation unless soundproofing is a specific concern.
-4. Summary: A 1-sentence executive RevOps summary acknowledging any major compromise or dealbreaker.
-
-Output strict JSON matching:
-{
-  "pros": string[],
-  "cons": string[],
-  "recommendation": string,
-  "summary": string
-}`,
-    scrapedDescription
-  );
-
-  const apiKey = Bun.env.DEEPSEEK_API_KEY || Bun.env.OPENAI_API_KEY;
-  const isTestOrOffline = forceFallback || Bun.env.NODE_ENV === 'test' || !apiKey || apiKey.trim().length === 0;
-
-  if (isTestOrOffline) {
-    console.log(`[LLM Service] Using intelligent offline/test review generator for listing: ${listingTitle}`);
-    const dynamicPros: string[] = [];
-    if (highRatedFeatures.length > 0) {
-      dynamicPros.push(`Exceeds your RevOps criteria for high priority features: ${highRatedFeatures.slice(0, 2).map(f => f.split(' (')[0]).join(' and ')}.`);
-    } else {
-      dynamicPros.push(`Prime location in ${neighborhood}, ${city} offering immediate access to urban transit and neighborhood amenities.`);
-    }
-    dynamicPros.push(`Functional ${areaSqm !== 'unknown' ? areaSqm + ' m² ' : ''}layout with ${totalRooms !== 'unknown' ? totalRooms + ' total room(s)' : 'efficient spatial distribution'} on floor level "${floorLevel}".`);
-    dynamicPros.push(`Competitive market positioning at €${price}/month ${pricePerSqm !== 'unknown' ? '(approx. €' + pricePerSqm + '/m²)' : ''} relative to comparable listings in ${neighborhood}.`);
-
-    const dynamicCons: string[] = [];
-    if (dealbreakers.length > 0) {
-      for (const db of dealbreakers.slice(0, 2)) {
-        dynamicCons.push(`Critical Trade-off / Dealbreaker: This listing fails or severely compromises on ${db}.`);
-      }
-    }
-    if (lowRatedFeatures.length > 0 && dynamicCons.length < 3) {
-      for (const lr of lowRatedFeatures.slice(0, 3 - dynamicCons.length)) {
-        dynamicCons.push(`Minor compromise on ${lr}.`);
-      }
-    }
-    while (dynamicCons.length < 3) {
-      if (!hasElevator && !dynamicCons.some(c => c.toLowerCase().includes('elevator'))) {
-        dynamicCons.push(`Floor level "${floorLevel}" without elevator access requires consideration regarding daily stairs and logistics.`);
-      } else if (!dynamicCons.some(c => c.toLowerCase().includes('prioritizing the desirable'))) {
-        dynamicCons.push(`At €${price}/month, you are prioritizing the desirable ${neighborhood} location over maximum spatial square footage.`);
-      } else if (!dynamicCons.some(c => c.toLowerCase().includes('heating system'))) {
-        dynamicCons.push(`Standard ${heatingType} heating system and overall building efficiency should be verified during an in-person viewing.`);
-      } else {
-        break;
-      }
-    }
-
-    let dynamicRec = '';
-    if (dealbreakers.length > 0) {
-      const dbNames = dealbreakers.map(d => d.split(' (')[0]).join(' and ');
-      dynamicRec = `Proceed with caution due to the identified dealbreaker on ${dbNames}. During your viewing or initial outreach, explicitly ask the landlord if there is any flexibility, kitchen space for appliance installation, or workaround regarding ${dbNames}. Confirm all utility inclusions in the €${price} monthly rent before signing.`;
-    } else {
-      dynamicRec = `Schedule an in-person viewing in ${neighborhood} immediately. Confirm with the landlord whether community fees, water, and heating are included in the €${price} monthly rent, and inspect overall appliance condition.`;
-    }
-
-    const dynamicSum = dealbreakers.length > 0
-      ? `A qualified lead in ${neighborhood} at €${price}/mo that requires a deliberate compromise on ${dealbreakers[0].split(' (')[0]}, offset by strong spatial and locational metrics.`
-      : `A highly qualified match in ${neighborhood} at €${price}/mo (${pricePerSqm !== 'unknown' ? '€' + pricePerSqm + '/m²' : 'market rate'}), offering excellent alignment with your RevOps criteria.`;
-
-    const fallbackResult = {
-      pros: dynamicPros.slice(0, 3),
-      cons: dynamicCons.slice(0, 3),
-      recommendation: dynamicRec,
-      summary: dynamicSum,
-    };
-    return AiReviewSchema.parse(fallbackResult);
-  }
-
-  const model = Bun.env.DEEPSEEK_REVIEW_MODEL || Bun.env.DEEPSEEK_MODEL || 'deepseek-chat';
-  console.log(`[LLM Service] Invoking DeepSeek API (${model}) for Senior RevOps AI Review...`);
-
-  const response = await fetch('https://api.deepseek.com/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey.trim()}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Analyze this apartment listing and generate the RevOps review:\n\nTitle: ${listingTitle}\nPrice: €${price}\n\nStructured Data:\n${JSON.stringify(ext, null, 2)}` },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.2,
-    }),
+Read the listing.`,
+    schema: ANALYSIS_SCHEMA,
+    effort: 'medium',
+    maxTokens: 8000,
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.warn(`[LLM Service] DeepSeek API review generation error (${response.status}): ${errorText}. Falling back to dynamic review.`);
-    return generateAiReview(listingTitle, price, scrapedDescription, extractedData, userProfile, true);
-  }
+  if (!analysis) return unread();
 
-  const data = await response.json();
-  const rawJsonString = data.choices?.[0]?.message?.content;
-  if (!rawJsonString) {
-    throw new Error('DeepSeek API returned empty response content for AI review.');
-  }
-
+  let parsed: AiReview;
   try {
-    const parsedJson = JSON.parse(rawJsonString);
-    const validatedReview = AiReviewSchema.parse(parsedJson);
-    console.log(`[LLM Service] Successfully generated DeepSeek AI Review for ${listingTitle}`);
-    return validatedReview;
-  } catch (err: any) {
-    console.error('[LLM Service] Failed to validate DeepSeek JSON for AI review:', err.message);
-    throw new Error(`AI Review JSON validation failed: ${err.message}`);
+    parsed = AiReviewSchema.parse({ ...analysis, analysed: true });
+  } catch {
+    return unread();
   }
+
+  // A flag whose quote is not actually in the description is a fabrication, and
+  // this is the cheapest place to catch one rather than the user's screen.
+  const haystack = description.toLowerCase();
+  parsed.flags = parsed.flags.filter((flag) => {
+    const quote = flag.quote?.trim().toLowerCase();
+    if (!quote) return false;
+    const present = haystack.includes(quote);
+    if (!present) console.warn(`[LLM] Dropped a flag whose quote is absent from the listing: "${flag.quote}"`);
+    return present;
+  });
+
+  // The model is only offered features the user has not assessed, but it can still
+  // echo something outside that list. Anything it invents is discarded.
+  const allowed = new Set(openFeatureNames.map((n) => n.toLowerCase()));
+  parsed.unknowns = parsed.unknowns.filter((u) => allowed.has(u.feature?.trim().toLowerCase()));
+
+  return parsed;
 }

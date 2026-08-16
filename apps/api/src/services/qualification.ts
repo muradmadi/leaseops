@@ -10,14 +10,16 @@
  * here so a lead is enriched identically no matter which one qualified it.
  */
 import {
-  findApartmentById,
+  findApartmentByIdUnscoped,
+  findHouseholdMembers,
   findMessagesByApartmentId,
   createMessage,
   updateApartmentEnrichment,
   type Apartment,
   type UserProfile,
 } from '@leaseops/db';
-import { generateAiReview, draftOutreachMessage, type TenantPersona } from './llm';
+import { analyseListing, draftOutreachMessage, type TenantPersona } from './llm';
+import { buildHouseholdSignOff, buildWritingForms } from './signoff';
 import { globalEvents } from './events';
 
 /**
@@ -47,6 +49,36 @@ export function resolvePersona(userProfile?: UserProfile | null): TenantPersona 
 }
 
 /**
+ * The persona used for outreach, including the sign-off derived from who is
+ * actually in the household.
+ *
+ * The sign-off is not stored anywhere: it is rebuilt from the members' display
+ * names on every draft, so a partner joining or changing their name is reflected
+ * immediately instead of leaving a stale name on the letter.
+ */
+export async function resolveHouseholdPersona(
+  householdId: string,
+  userProfile?: UserProfile | null
+): Promise<TenantPersona> {
+  const persona = resolvePersona(userProfile);
+
+  try {
+    const members = await findHouseholdMembers(householdId);
+    const signOff = buildHouseholdSignOff(members, persona.targetLanguage);
+    if (signOff) persona.signOffName = signOff;
+
+    // Blank when nobody has answered; the prompt then tells the model to write
+    // around gendered forms rather than pick one.
+    persona.writingForms = buildWritingForms(members);
+  } catch (err: any) {
+    // An unsigned draft is recoverable; a failed draft is not.
+    console.warn(`[Qualification] Could not resolve sign-off for household ${householdId}: ${err.message}`);
+  }
+
+  return persona;
+}
+
+/**
  * Generates and persists an AI review for a qualified listing if it does not
  * already have one. Returns the review, or undefined if generation failed.
  */
@@ -58,10 +90,10 @@ export async function ensureAiReview(
   if (ext.aiReview) return ext.aiReview;
 
   try {
-    const aiReview = await generateAiReview(
+    const aiReview = await analyseListing(
       apartment.title || ext.title || 'Property',
       apartment.price || ext.price?.amount || 0,
-      ext.description || apartment.rawHtml?.slice(0, 5000),
+      ext.description || '',
       ext,
       userProfile,
       apartment.featureScores
@@ -93,15 +125,14 @@ export async function maybeAutoDraftOutreach(
   if (existing.length > 0) return false;
 
   const ext = (apartment.extractedData || {}) as any;
-  const description = ext.description || apartment.rawHtml?.slice(0, 5000) || '';
+  const description = ext.description || '';
 
   try {
     const outreach = await draftOutreachMessage(
       apartment.title,
       description,
-      resolvePersona(userProfile),
-      aiReview || ext.aiReview,
-      apartment.featureScores
+      await resolveHouseholdPersona(apartment.householdId, userProfile),
+      aiReview || ext.aiReview
     );
 
     const now = new Date();
@@ -131,14 +162,19 @@ export async function maybeAutoDraftOutreach(
  */
 export async function enrichQualifiedLead(
   apartmentId: string,
-  userProfile?: UserProfile | null
+  userProfile?: UserProfile | null,
+  options: { requireQualified?: boolean } = {}
 ): Promise<void> {
-  const apartment = await findApartmentById(apartmentId);
-  if (!apartment || apartment.status !== 'QUALIFIED') return;
+  const { requireQualified = true } = options;
+  const apartment = await findApartmentByIdUnscoped(apartmentId);
+  if (!apartment) return;
+  // Activating a listing that fell short is a deliberate override: the user has
+  // decided to chase it anyway, so the AI spend the pipeline withheld is released.
+  if (requireQualified && apartment.status !== 'QUALIFIED') return;
 
   const aiReview = await ensureAiReview(apartment, userProfile);
-  const fresh = (await findApartmentById(apartmentId)) || apartment;
+  const fresh = (await findApartmentByIdUnscoped(apartmentId)) || apartment;
   await maybeAutoDraftOutreach(fresh, userProfile, aiReview);
 
-  globalEvents.emit('apartmentUpdated', { id: apartmentId, status: 'QUALIFIED' });
+  globalEvents.emit('apartmentUpdated', { id: apartmentId, status: apartment.status });
 }

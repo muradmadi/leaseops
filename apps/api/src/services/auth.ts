@@ -1,50 +1,98 @@
 import { createMiddleware } from 'hono/factory';
 import { getCookie } from 'hono/cookie';
-import { findValidSessionByToken, type UserSession } from '@leaseops/db';
+import {
+  findValidSessionByToken,
+  findUserById,
+  type UserSession,
+  type User,
+} from '@leaseops/db';
 
 export type AuthEnv = {
   Variables: {
     session: UserSession;
-    user: { username: string };
+    user: User;
+    /**
+     * The household the request acts on. Every query that reads or writes user
+     * data must scope to this — it comes from the session, never from the request
+     * body or a query parameter.
+     */
+    householdId: string;
   };
 };
 
 /**
- * Verifies username and password against configured environment variables.
+ * Hashes a password with `Bun.password` (argon2id by default) — native, no
+ * dependency, and salted per hash. Plaintext is never stored or logged.
  */
-export function verifyCredentials(username?: string, password?: string): boolean {
-  if (!username || !password) return false;
-  const expectedUser = Bun.env.AUTH_USERNAME || 'admin';
-  const expectedPass = Bun.env.AUTH_PASSWORD || 'leaseops';
-
-  // Use timing-safe comparison if possible, or standard equality in single-tenant self-hosted dev
-  return username === expectedUser && password === expectedPass;
+export function hashPassword(password: string): Promise<string> {
+  return Bun.password.hash(password);
 }
 
 /**
- * Hono middleware that enforces active session authentication via HTTP-only cookie or Bearer token.
- * Attaches validated session and user payload to context variables.
+ * Verifies a password against a stored hash.
+ *
+ * `Bun.password.verify` throws on a malformed hash rather than returning false,
+ * so it is caught here: a corrupt hash must read as "wrong password", not as a
+ * 500 that tells an attacker the account exists.
+ */
+export async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  try {
+    return await Bun.password.verify(password, hash);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Extracts the session token from the HTTP-only cookie, falling back to a Bearer
+ * header so the PWA works when cookies are unavailable.
+ */
+export function extractSessionToken(c: {
+  req: { header: (name: string) => string | undefined };
+}): string | undefined {
+  const cookieToken = getCookie(c as any, 'leaseops_session');
+  if (cookieToken) return cookieToken;
+
+  const authHeader = c.req.header('Authorization');
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const bearer = authHeader.slice(7).trim();
+    if (bearer) return bearer;
+  }
+  return undefined;
+}
+
+/**
+ * Resolves a request to its session, user, and household. Returns undefined when
+ * the token is missing, expired, or points at a user that no longer exists.
+ */
+export async function resolveRequestUser(c: any): Promise<
+  { session: UserSession; user: User } | undefined
+> {
+  const token = extractSessionToken(c);
+  if (!token) return undefined;
+
+  const session = await findValidSessionByToken(token);
+  if (!session) return undefined;
+
+  const user = await findUserById(session.userId);
+  if (!user) return undefined;
+
+  return { session, user };
+}
+
+/**
+ * Hono middleware enforcing an active session, and attaching the caller's user
+ * and household to the context.
  */
 export const requireAuth = createMiddleware<AuthEnv>(async (c, next) => {
-  let token = getCookie(c, 'leaseops_session');
-  
-  if (!token) {
-    const authHeader = c.req.header('Authorization');
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      token = authHeader.slice(7).trim();
-    }
-  }
+  const resolved = await resolveRequestUser(c);
 
-  if (!token) {
+  if (!resolved) {
     return c.json({ message: 'Authentication required. Please log in.', statusCode: 401 }, 401);
   }
 
-  const session = await findValidSessionByToken(token);
-  if (!session) {
-    return c.json({ message: 'Invalid or expired session. Please log in again.', statusCode: 401 }, 401);
-  }
-
-  c.set('session', session);
-  c.set('user', { username: session.username });
+  c.set('session', resolved.session);
+  c.set('user', resolved.user);
+  c.set('householdId', resolved.user.householdId);
   await next();
 });
