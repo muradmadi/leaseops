@@ -1,6 +1,18 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db } from '../client';
 import { users, type User, type NewUser } from '../schema/auth';
+
+/**
+ * Total accounts on the instance, across every household.
+ *
+ * Used only to recognise a brand-new deployment: sign-up on a public hostname
+ * is closed by default, and the exception is the very first account, which
+ * otherwise could never be created without editing the environment first.
+ */
+export async function countUsers(): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)` }).from(users);
+  return Number(row?.count ?? 0);
+}
 
 /** A user with the password hash stripped — the only shape routes should return. */
 export type PublicUser = Omit<User, 'passwordHash'>;

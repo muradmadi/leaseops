@@ -18,6 +18,13 @@ export interface AuthState {
   authenticated: boolean;
   user?: AuthUser;
   household?: AuthHousehold;
+  /**
+   * True only on an instance with no accounts at all, where a database from
+   * another instance may still be adopted. It closes permanently the moment
+   * any account exists, so the login screen must not cache this across a
+   * successful sign-up.
+   */
+  canImport?: boolean;
 }
 
 export interface LoginPayload {
@@ -109,6 +116,67 @@ export function useSignup() {
       queryClient.invalidateQueries({ queryKey: ['apartments'] });
       queryClient.invalidateQueries({ queryKey: ['profiles'] });
       queryClient.invalidateQueries({ queryKey: ['households'] });
+    },
+  });
+}
+
+/** What the server reports after adopting a database, keyed by table. */
+export type ImportResult = Record<string, number>;
+
+export interface ImportPreview {
+  ok: boolean;
+  counts: ImportResult;
+  /** Shown so a person can recognise the database before replacing anything. */
+  households: string[];
+  accounts: string[];
+}
+
+/**
+ * The upload: the database, plus its write-ahead log when there is one.
+ *
+ * The `-wal` is not optional detail. SQLite keeps recent writes there, so a
+ * `.db` copied while the app is running can be an old snapshot — structurally
+ * perfect and quietly wrong.
+ */
+function importForm({ database, wal }: { database: File; wal?: File | null }) {
+  const form = new FormData();
+  form.append('database', database);
+  if (wal) form.append('wal', wal);
+  return form;
+}
+
+/**
+ * Reads the uploaded database and reports what is in it, changing nothing.
+ * Always run before {@link useImportDatabase} — it is the only step that can
+ * catch a stale or simply wrong file, because a human reads the result.
+ */
+export function useInspectDatabase() {
+  return useMutation({
+    mutationFn: (files: { database: File; wal?: File | null }) =>
+      apiFetch<ImportPreview>('/auth/import/inspect', { method: 'POST', body: importForm(files) }),
+  });
+}
+
+/**
+ * Uploads an existing instance's database file to a brand-new instance.
+ *
+ * Only usable while no account exists — see `canImport`. Nothing is persisted
+ * client-side on success: the caller signs in afterwards with the credentials
+ * that came across in the file, which are the ones they already had.
+ */
+export function useImportDatabase() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (files: { database: File; wal?: File | null }) =>
+      apiFetch<{ success: boolean; imported: ImportResult }>('/auth/import', {
+        method: 'POST',
+        body: importForm(files),
+      }),
+    onSuccess: () => {
+      // The instance now has accounts, so `canImport` has flipped and every
+      // cached view of "this is an empty install" is wrong.
+      queryClient.invalidateQueries({ queryKey: ['auth', 'me'] });
     },
   });
 }

@@ -9,6 +9,113 @@ describe('Authentication Flow & Route Protection', () => {
     for (const account of accounts) await account.cleanup();
   });
 
+  /**
+   * The gate on creating a household. `ALLOW_SIGNUP=false` is exercised rather
+   * than the production default ("open until the first account exists") because
+   * the suite runs against the developer's database, which already has users —
+   * and flipping `NODE_ENV` to production mid-run would also switch the LLM
+   * services off their offline stubs.
+   */
+  describe('ALLOW_SIGNUP gate', () => {
+    const original = Bun.env.ALLOW_SIGNUP;
+    const restore = () => {
+      if (original === undefined) delete Bun.env.ALLOW_SIGNUP;
+      else Bun.env.ALLOW_SIGNUP = original;
+    };
+
+    it('refuses to create a new household when sign-up is closed', async () => {
+      Bun.env.ALLOW_SIGNUP = 'false';
+      try {
+        const res = await app.fetch(
+          new Request('http://localhost/api/auth/signup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'create',
+              username: `t_closed_${crypto.randomUUID().slice(0, 8)}`,
+              password: TEST_PASSWORD,
+              displayName: 'Stranger',
+              gender: 'male',
+              householdName: 'Uninvited',
+            }),
+          })
+        );
+
+        expect(res.status).toBe(403);
+        expect((await res.json()).statusCode).toBe(403);
+      } finally {
+        restore();
+      }
+    });
+
+    it('still lets someone join an existing household, which needs its code', async () => {
+      const host = await createTestAccount('gatehost');
+      accounts.push(host);
+
+      Bun.env.ALLOW_SIGNUP = 'false';
+      try {
+        const res = await app.fetch(
+          new Request('http://localhost/api/auth/signup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              mode: 'join',
+              joinCode: host.joinCode,
+              username: `t_joiner_${crypto.randomUUID().slice(0, 8)}`,
+              password: TEST_PASSWORD,
+              displayName: 'Partner',
+              gender: 'female',
+            }),
+          })
+        );
+
+        // Closing sign-up must not strand a partner setting up their phone.
+        expect(res.status).toBe(201);
+        expect((await res.json()).household.id).toBe(host.householdId);
+      } finally {
+        restore();
+      }
+    });
+  });
+
+  /**
+   * The bootstrap import endpoint replaces every row in the database, which is
+   * why the only tests here are of the gate that stops it.
+   *
+   * The happy path is covered in `packages/db/src/repository/import.test.ts`
+   * against purpose-built temporary databases. It must never be exercised
+   * through the route: this suite runs against the developer's real database,
+   * and a successful import would delete their pipeline.
+   */
+  describe('POST /api/auth/import', () => {
+    const upload = (contents: string, filename = 'db.db') => {
+      const form = new FormData();
+      form.append('database', new File([contents], filename));
+      return app.fetch(new Request('http://localhost/api/auth/import', { method: 'POST', body: form }));
+    };
+
+    it('is closed once the instance has any account', async () => {
+      // This suite always has accounts, which is exactly the condition.
+      const account = await createTestAccount('importgate');
+      accounts.push(account);
+
+      const res = await upload('SQLite format 3\0');
+
+      expect(res.status).toBe(409);
+      expect((await res.json()).message).toContain('already has an account');
+    });
+
+    it('refuses a request with no file attached', async () => {
+      const res = await app.fetch(
+        new Request('http://localhost/api/auth/import', { method: 'POST', body: new FormData() })
+      );
+
+      // The account gate is checked first and is what answers here; either way
+      // the request must not be treated as an import.
+      expect([400, 409]).toContain(res.status);
+    });
+  });
+
   it('returns unauthenticated on GET /api/auth/me without token', async () => {
     const res = await app.fetch(new Request('http://localhost/api/auth/me'));
     expect(res.status).toBe(200);

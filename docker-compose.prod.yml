@@ -1,0 +1,112 @@
+# Production stack for LeaseOps — one container, fronted by a Cloudflare tunnel.
+#
+# Dokploy: create a "Docker Compose" application pointed at this repo and set
+# the compose path to `docker-compose.prod.yml`. Everything below reads from the
+# environment, so the Dokploy UI's environment editor is the only place you type
+# a value.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# `docker-compose.yml` is the development stack and is unrelated to this file.
+
+services:
+  leaseops:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: leaseops:latest
+    container_name: leaseops
+    restart: unless-stopped
+
+    # Reaps zombies and forwards signals, so `docker stop` is a clean shutdown
+    # rather than a 10-second wait for SIGKILL.
+    init: true
+
+    ports:
+      # Loopback by default, and that default is the security control: Docker
+      # writes its own iptables rules ahead of UFW, so `8767:3000` would publish
+      # this to every interface on the VM and let anyone who can reach the box
+      # bypass the tunnel — and with it, Cloudflare Access.
+      #
+      # Keep 127.0.0.1 when cloudflared runs on the host. If cloudflared runs as
+      # a container, put it on this compose network instead and point the tunnel
+      # at `http://leaseops:3000` rather than opening the bind address.
+      - "${LEASEOPS_BIND:-127.0.0.1}:${LEASEOPS_PORT:-8767}:3000"
+
+    environment:
+      # Also switches on the `secure` flag for the session cookie and turns off
+      # the development auto-migrate. The entrypoint migrates explicitly.
+      NODE_ENV: production
+      PORT: 3000
+
+      # Must stay inside the mounted volume, or the pipeline is recreated empty
+      # on every deploy.
+      DATABASE_URL: /app/data/local_leaseops.db
+
+      # The PWA is served from this same origin, so nothing is cross-origin and
+      # an empty value is correct. Setting a domain here only widens the app.
+      CORS_ALLOWED_ORIGINS: ""
+
+      # Rate limiting needs the caller's real address, and behind a tunnel the
+      # socket address is cloudflared's. Only set this when something in front
+      # of the app overwrites the header — cloudflared always does.
+      TRUSTED_CLIENT_IP_HEADER: cf-connecting-ip
+
+      # Unset, a production instance allows exactly one household to be created
+      # (the first account on an empty database) and closes afterwards. Joining
+      # an existing household with its code is never gated. Set "true" only
+      # while deliberately onboarding someone new.
+      ALLOW_SIGNUP: "${ALLOW_SIGNUP:-}"
+
+      # Not read at request time — the Anthropic key is per household, set in
+      # Settings → AI & billing. Leave this empty unless you want the one-click
+      # import offered on a fresh install.
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+
+    volumes:
+      # The database holds the households' Anthropic keys in plaintext (a known,
+      # documented trade-off), so this volume is as sensitive as a `.env` file.
+      # Back it up accordingly, and encrypt those backups.
+      - leaseops_data:/app/data
+
+    # The application writes to exactly one directory, and it is the volume
+    # above. Freezing the rest means a bug that can write a file still cannot
+    # leave one behind that the next start would execute.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+
+    security_opt:
+      # Blocks setuid binaries from gaining privileges — the container already
+      # runs as uid 1000, and this stops it climbing back out.
+      - no-new-privileges:true
+
+    cap_drop:
+      - ALL
+
+    # A runaway LLM loop or a SQLite scan should degrade this app, not the VM
+    # and everything else Dokploy is hosting on it.
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.5"
+
+    # Container logs include request lines; without rotation they grow until the
+    # disk is full, which on a single-VM host takes the other services with it.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  leaseops_data:
+    driver: local

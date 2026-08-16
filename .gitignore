@@ -17,6 +17,10 @@ build/
 !.env.example
 !.env.template
 
+# Database backups. These hold every household's Anthropic key in plaintext,
+# exactly as the live database does — see docker/backup.sh.
+backups/
+
 # SQLite database files
 *.db
 *.db-journal

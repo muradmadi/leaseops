@@ -1,20 +1,45 @@
-node_modules/
+# Everything the image does not need. Keeping this tight is not only about size:
+# `.env` and `*.db` must never end up in a layer, because layers survive the
+# `rm` that deletes them.
+**/node_modules/
 .git/
 .gitignore
 .dockerignore
+
+# The database is a mounted volume, never baked in. It also holds the
+# households' Anthropic keys.
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
-dist/
-build/
-.env*
+
+# Built inside the image, not copied from the host — a stale local `dist` would
+# otherwise be deployed instead of the current source.
+**/dist/
+**/build/
+*.tsbuildinfo
+
+.env
+.env.*
 !.env.example
+
 README.md
 ROADMAP.md
+LICENSE
 CLAUDE.md
 **/CLAUDE.md
+justfile
+mise.toml
+eslint.config.mjs
+docker-compose.yml
+docker-compose.prod.yml
+Dockerfile
+
 .agents/
+.claude/
+.cursor/
 .vscode/
 .idea/
 coverage/
+tmp/
+scratch/

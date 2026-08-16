@@ -335,6 +335,53 @@ prose. Always use `resolvePersona()` from `qualification.ts` — a bare
 `JSON.parse` in a try/catch silently yields an empty persona, which made every
 outreach draft generic for months.
 
+## Serving the PWA and the public-edge middleware
+
+In production this process is the whole application: `mountWebApp` in
+`services/static.ts` registers a catch-all `GET` that serves `apps/web/dist`,
+which is what puts the API and the PWA on one origin. Two consequences:
+
+- **Register it last.** Hono composes handlers in registration order, so the
+  catch-all must come after every `/api` route or it swallows them. It returns
+  `c.notFound()` for anything under `/api`, so a mistyped endpoint stays a JSON
+  404 instead of becoming a 200 with an HTML body.
+- **Cache-Control is load-bearing.** `/assets/*` is fingerprinted by Vite and
+  immutable; everything else is `no-cache`. A cached `sw.js` pins an installed
+  PWA to an old build with no recovery but clearing site data.
+
+`index.ts` also mounts the edge hardening. When changing it:
+
+- **`secureHeaders` sends a CSP with `script-src 'self'`.** Vite emits real files
+  for both the app and the PWA registration, so no inline script is needed —
+  keep it that way. Adding a third-party script or an external API the *browser*
+  calls means widening this policy; Anthropic is called from the server, so
+  `connect-src` stays `'self'`.
+- **`rateLimit` is skipped under `NODE_ENV=test`,** because the suite signs up a
+  household per file and logs in repeatedly, which is exactly the pattern it
+  blocks.
+- **It buckets on `TRUSTED_CLIENT_IP_HEADER`, never on a sniffed header.** Behind
+  a proxy the socket address is the proxy's, identical for everyone; a header is
+  forgeable unless something in front overwrites it. An instance that has not
+  declared a proxy falls back to the socket peer, and if it cannot identify the
+  caller at all it declines to limit rather than share one bucket and lock
+  everybody out.
+- **Error messages are generic in production.** `onError` logs the real error and
+  returns "Internal Server Error", because `err.message` can carry a SQL
+  fragment, a path, or an upstream reply.
+
+Creating a household is gated by `canCreateHousehold()` in `routes/auth.ts`;
+joining one is not, since that already requires the join code. See the root
+`CLAUDE.md` for the `ALLOW_SIGNUP` semantics.
+
+`POST /api/auth/import` is the sharpest edge in this app: unauthenticated, and it
+replaces every row. Its only gate is `countUsers() === 0`, checked **twice** —
+before reading the upload and again after, since a slow upload leaves a window in
+which someone could sign up. There is no flag to reopen it once an account
+exists, and adding one would turn a bootstrap affordance into a way to wipe a
+live instance. `/api/auth/me` reports `canImport` so the login screen knows
+whether to offer it. Uploads stage next to the live database rather than in
+`/tmp`, which is a small tmpfs in the production container.
+
 ## Gotchas
 
 - **Tests share the development database.** There is no separate test DB. Tests

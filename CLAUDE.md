@@ -53,7 +53,7 @@ Run from the repo root. `just <recipe>` and `bun run <script>` are equivalent.
 | :--- | :--- |
 | `bun install` | Install all workspace dependencies |
 | `bun run dev` | API on :3000, web on :5173, both watching |
-| `bun test` | Full suite (142 tests) |
+| `bun test` | Full suite (178 tests) |
 | `bun run typecheck` | Typecheck all three workspaces |
 | `bun run build` | Production build |
 | `bun run db:migrate` | Apply Drizzle migrations |
@@ -66,6 +66,88 @@ bun run typecheck && bun test && bun run build
 
 Typecheck alone is not sufficient — Bun transpiles TS without checking types, so
 a type error is a *runtime* error here, not just a lint warning.
+
+## Deployment
+
+Production is **one container on one origin**: the API process serves `/api` and
+the built PWA together (`apps/api/src/services/static.ts`). Keep it that way —
+splitting them puts the session cookie cross-site and drags CORS back in.
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build   # not docker-compose.yml
+./docker/backup.sh                                        # VACUUM INTO, WAL-safe
+```
+
+Things that are easy to break:
+
+- **`NODE_ENV=production` turns off the auto-migrate** in `packages/db/src/client.ts`,
+  so `docker/entrypoint.sh` runs migrations before exec'ing the server. It calls
+  `bun run packages/db/src/migrate.ts` by path, *not* the workspace script — that
+  script passes `--env-file=../../.env`, a file the image deliberately lacks.
+- **The published port defaults to `127.0.0.1`.** Docker's iptables rules are
+  written ahead of UFW, so binding `0.0.0.0` exposes the app on every interface
+  and lets anyone who can reach the VM bypass the tunnel and Cloudflare Access.
+- **`ALLOW_SIGNUP` unset means "open until the first account exists".** A fresh
+  deployment can create exactly one household and then closes itself. Joining an
+  existing household is never gated — it already requires the join code.
+- **The volume is as sensitive as `.env`** (plaintext Anthropic keys). Copying
+  the `.db` alone is not a backup: WAL mode keeps recent writes in a sibling
+  file. Use `docker/backup.sh`, and `backups/` is gitignored.
+
+**`docker/import-db.sh` must stay remote-daemon-safe.** It splits into
+`--prepare` (needs bun and the source database) and `--install` (needs only
+docker), so it can cross a machine boundary, and every Docker operation is a
+named-volume command or `docker cp` — both executed by the daemon on its own
+host. **Never add a bind mount of a local path to it:** with `DOCKER_HOST` set to
+a remote machine, `-v /local/path:/x` silently resolves on the *server* and
+mounts the wrong directory instead of failing. It also uses `docker stop`, not
+`docker compose stop`, because Dokploy names the compose project itself.
+
+**Moving data between instances moves the database file**, never a serialisation
+format. Same engine, same schema, same migrations, so the file *is* the export.
+Two supported routes, and they share all their validation logic:
+
+- `docker/import-db.sh` — from a shell, for someone with Docker access.
+- `POST /api/auth/import` — upload the `.db` from the login screen, so a
+  migration needs no server access at all.
+
+**Do not add a JSON export/import format.** It would re-implement what SQLite
+does correctly and get to be wrong about integer timestamps, the JSON-encoded
+columns, FK ordering and id collisions. Note the asymmetry: **there is an import
+and deliberately no export endpoint**, because a route that serialises the
+database is a route that serves every household's plaintext Anthropic key.
+Getting data *out* is a file you already have.
+
+### The import endpoint is the most dangerous route in the app
+
+It is unauthenticated and it deletes every row. What makes that acceptable is
+one gate: it works **only while `countUsers() === 0`** — the same window in which
+a stranger could simply sign up and own the instance anyway. Rules for touching
+it:
+
+- The zero-users check runs **twice**, once before reading the upload and once
+  after, because a large upload takes time and an account may appear during it.
+- There is **no flag to reopen it**. Once any account exists — including one
+  created by the import itself — it is a permanent 409. Do not add an override;
+  a populated instance restores from `docker/backup.sh` on the server.
+- The uploaded file is untrusted input handed to SQLite. `validateImportCandidate`
+  compares the candidate's **full schema fingerprint** against the live one, which
+  is what rejects a file carrying injected triggers or views. Weakening that check
+  to "has the right tables" reopens that hole.
+- **A `.db` without its `-wal` is stale, and nothing can detect that.** WAL mode
+  keeps recent writes in the sibling file, so the database alone is a valid,
+  consistent snapshot of an earlier moment — it passes the integrity check and
+  the fingerprint identically. This shipped once and imported deleted test
+  fixtures onto a real server. Two things guard it now, and both must stay: the
+  endpoint accepts an optional `wal` upload (`foldWalIntoDatabase` replays it),
+  and **the inspect step reports household and account names** so a person can
+  recognise data that is not theirs. Do not collapse inspect-then-confirm into a
+  single call; the human read is the only real check.
+- `importDatabaseFile` and `validateImportCandidate` take the target `Database`
+  as an argument. **Keep it that way.** Tests run against the developer's real
+  database, and a version that hardcoded the singleton would erase the pipeline
+  of whoever ran `bun test`. The happy path is only ever tested against temporary
+  databases in `packages/db/src/repository/import.test.ts`.
 
 ## Absolute constraints
 
@@ -136,8 +218,9 @@ to add one.
 - **Leaving a household clears its key if you were the one paying.** Any other
   member leaving does not. The household drops to offline output rather than
   quietly spending a credential its owner no longer controls.
-- **No production Docker image.** `docker-compose.yml` runs the dev server with
-  source bind-mounted.
+- **`docker-compose.yml` is the development stack** and runs the dev server with
+  source bind-mounted. Production is `Dockerfile` + `docker-compose.prod.yml`;
+  the two are unrelated and only the latter is hardened.
 - **The outreach sign-off is derived, never typed.** It is rebuilt on every draft
   from the household members' display names, joined by a conjunction in the target
   language (`apps/api/src/services/signoff.ts`) — "Murad und Paulie" in German,

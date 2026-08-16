@@ -30,11 +30,16 @@ export async function apiFetch<T>(endpoint: string, options?: RequestInit): Prom
   
   const token = typeof window !== 'undefined' ? localStorage.getItem('leaseops_token') : null;
 
+  // FormData must set its own Content-Type: the header carries a generated
+  // multipart boundary, and overriding it with application/json leaves the
+  // server unable to parse a body that looks perfectly well formed.
+  const isFormData = typeof FormData !== 'undefined' && options?.body instanceof FormData;
+
   const response = await fetch(url, {
     credentials: 'include',
     ...options,
     headers: {
-      'Content-Type': 'application/json',
+      ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options?.headers,
     },

@@ -27,7 +27,9 @@
   }
   
   body {
-    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    /* 'Inter Variable' is the family name the self-hosted variable font
+       registers (see main.tsx); plain 'Inter' still picks up a local install. */
+    font-family: 'Inter Variable', 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     background-color: var(--color-zinc-950);
     color: var(--color-zinc-100);
     overflow-x: hidden;

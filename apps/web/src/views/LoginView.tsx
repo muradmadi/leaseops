@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { useLogin, useSignup } from '../lib/useAuth';
+import { useAuth, useLogin, useSignup } from '../lib/useAuth';
+import ImportDatabasePanel from '../components/ImportDatabasePanel';
 import Segmented, {
   GENDER_OPTIONS,
   FORM_OPTIONS,
@@ -17,6 +18,7 @@ const MIN_PASSWORD_LENGTH = 12;
 
 export default function LoginView() {
   const [mode, setMode] = useState<Mode>('login');
+  const [importing, setImporting] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -28,6 +30,12 @@ export default function LoginView() {
   const loginMutation = useLogin();
   const signupMutation = useSignup();
   const active = mode === 'login' ? loginMutation : signupMutation;
+
+  // Only a brand-new instance can adopt a database, so the entry point simply
+  // is not rendered anywhere else — there is nothing to hide or explain away
+  // once an account exists.
+  const { data: authState } = useAuth();
+  const canImport = authState?.canImport === true;
 
   const passwordTooShort = mode !== 'login' && password.length > 0 && password.length < MIN_PASSWORD_LENGTH;
   const canSubmit =
@@ -69,6 +77,10 @@ export default function LoginView() {
       <div className="w-full sm:hidden" />
 
       <div className="w-full max-w-md my-auto sm:my-0 sm:bg-zinc-900/80 sm:backdrop-blur-2xl sm:border sm:border-zinc-800/80 sm:rounded-3xl sm:p-8 sm:shadow-2xl sm:shadow-emerald-950/30 relative z-10 transition-all py-2">
+        {importing ? (
+          <ImportDatabasePanel onBack={() => setImporting(false)} />
+        ) : (
+        <>
         <div className="flex flex-col items-center text-center mb-7">
           <div className="w-14 h-14 sm:w-12 sm:h-12 rounded-2xl bg-gradient-to-br from-emerald-500 to-emerald-700 flex items-center justify-center shadow-lg shadow-emerald-500/20 mb-5 border border-emerald-400/20">
             <Lock className="w-7 h-7 sm:w-6 sm:h-6 text-zinc-950 font-extrabold stroke-[2.5]" />
@@ -295,6 +307,21 @@ export default function LoginView() {
             )}
           </button>
         </form>
+
+        {canImport && (
+          <div className="mt-6 pt-5 border-t border-zinc-800/70 text-center">
+            <p className="text-xs text-zinc-500 mb-2">Already running LeaseOps somewhere else?</p>
+            <button
+              type="button"
+              onClick={() => setImporting(true)}
+              className="text-xs font-semibold text-zinc-400 hover:text-emerald-400 underline underline-offset-4 decoration-zinc-700 hover:decoration-emerald-500/60 transition-colors min-h-[44px] px-4 cursor-pointer"
+            >
+              Migrate an existing database
+            </button>
+          </div>
+        )}
+        </>
+        )}
       </div>
 
       <div className="py-6 sm:mt-8 text-center text-xs text-zinc-600 font-mono">

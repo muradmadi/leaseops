@@ -70,6 +70,32 @@ generate a new one.
 not `production`. So in dev and test the schema self-heals and `db:migrate` is
 usually unnecessary — but production deployments must run it explicitly.
 
+## `repository/import.ts` — adopting another instance's database
+
+Backs the login screen's migrate panel and `docker/import-db.sh`. It is the only
+code here that deletes every row, so it has rules of its own:
+
+- **`validateImportCandidate` and `importDatabaseFile` take the target
+  `Database` as a parameter, defaulting to the singleton. Keep that seam.** Tests
+  run against the developer's real database; a version that hardcoded `sqlite`
+  would erase the pipeline of whoever ran `bun test`. The happy path is tested
+  only against temporary databases built in `import.test.ts`.
+- **Validation compares a full schema fingerprint**, not a table list. The
+  uploaded file is untrusted input, and a SQLite file can carry triggers and
+  views that run SQL when touched — an extra trigger means it is not our schema.
+- **A `.db` supplied without its `-wal` is stale and passes every check.** That
+  is the WAL gotcha below, weaponised: the file is a valid, consistent snapshot
+  of an earlier moment. `foldWalIntoDatabase` exists so a caller can supply the
+  log too, and `validateImportCandidate` returns household and account *names*
+  precisely because a machine cannot tell — only the person looking at them can.
+- **It copies via `ATTACH` inside one transaction, never by replacing the file.**
+  Overwriting would strand the open connection on a deleted inode and force a
+  restart; this way the running process sees the new rows at once and any failure
+  rolls back whole.
+- `user_sessions` and `__drizzle_migrations` are deliberately not copied — stale
+  tokens for another origin, and a migration history that must keep describing
+  the schema this database actually has.
+
 ## Gotchas
 
 - **`DATABASE_URL` is resolved relative to the process CWD.** Unset, it defaults

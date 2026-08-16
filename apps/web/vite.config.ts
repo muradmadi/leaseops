@@ -39,6 +39,15 @@ export default defineConfig({
         // The API is the source of truth for pipeline state; caching it would
         // surface stale scores after reconnecting.
         navigateFallbackDenylist: [/^\/api/],
+        // Inter ships as seven unicode-range subsets. Only the latin ones can
+        // render German, Spanish or English, so precaching just those keeps the
+        // app in its real typeface offline without pulling 200 kB of Cyrillic,
+        // Greek and Vietnamese onto a phone that will never display them. The
+        // rest stay network-fetched, which is what `unicode-range` already does.
+        // Only the defaults plus fonts: `includeAssets` and the plugin already
+        // contribute favicon.svg and the manifest, and listing them here again
+        // puts duplicate entries in the precache manifest.
+        globPatterns: ['**/*.{js,css,html}', '**/inter-latin*.woff2'],
       },
     })
   ],

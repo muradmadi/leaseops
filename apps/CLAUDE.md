@@ -39,8 +39,11 @@ on non-2xx, so error paths are exceptions in the UI, not sentinel values.
 | `web` | 5173 | Vite proxies `/api` → `:3000` |
 
 The web client calls relative `/api/...` paths only. There is no configurable API
-base URL; in production the PWA must be served on the same origin as the API, or
-behind a proxy that routes `/api`.
+base URL, and there should not be: in production `apps/api` serves the built
+`apps/web/dist` itself (`api/src/services/static.ts`), so the two are one origin
+and one container. That is what keeps the session cookie first-party and makes
+CORS irrelevant in production — do not introduce a build-time API base URL to
+split them back apart.
 
 Both apps' `dev` and `start` scripts pass `--env-file=../../.env`. Preserve that
 flag if you edit the scripts — see the root `CLAUDE.md` for why.

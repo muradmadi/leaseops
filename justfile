@@ -44,6 +44,34 @@ db-migrate:
 db-studio:
     bun run --filter @leaseops/db studio
 
+# Build the hardened production image
+docker-build:
+    docker build -t leaseops:latest .
+
+# Bring up the production stack (NOT docker-compose.yml, which is the dev server)
+deploy:
+    docker compose -f docker-compose.prod.yml up -d --build
+
+# Follow the production container's logs
+deploy-logs:
+    docker compose -f docker-compose.prod.yml logs -f
+
+# Stop the production stack, leaving the data volume intact
+deploy-down:
+    docker compose -f docker-compose.prod.yml down
+
+# Consistent, WAL-safe backup of the running instance's database
+backup dest="./backups":
+    ./docker/backup.sh {{dest}}
+
+# Move an existing database (e.g. your laptop's) into the production volume
+import-db src="packages/db/local_leaseops.db":
+    ./docker/import-db.sh {{src}}
+
+# Write a transfer-ready copy to scp to the server (no Docker needed)
+prepare-db src="packages/db/local_leaseops.db":
+    ./docker/import-db.sh --prepare {{src}}
+
 # Clean build artifacts, dist folders, and cache
 clean:
     rm -rf node_modules dist .bun **/*/node_modules **/*/dist **/*/.turbo
