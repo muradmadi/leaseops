@@ -8,17 +8,24 @@ import {
   Zap,
   Building,
   Languages,
+  Ruler,
   AlertCircle,
   Briefcase,
   Calendar,
   Users,
   HeartHandshake,
   FileText,
+  FileSignature,
+  ShieldCheck,
+  FolderCheck,
+  CalendarClock,
+  Clock,
   X,
   CheckCircle2
 } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
 import { useProfile, useUpdateProfile } from '../lib/useProfile';
+import { useHousehold } from '../lib/useHousehold';
 import { PREFERENCE_CATEGORIES, getDefaultFeatureWeights } from '../lib/preferenceMatrixData';
 
 export default function OnboardingView() {
@@ -33,19 +40,41 @@ export default function OnboardingView() {
   // Form State - General & Logistics
   const [targetLocation, setTargetLocation] = useState<string>('');
   const [targetLanguage, setTargetLanguage] = useState<string>('English');
-  const [autoTranslateListings, setAutoTranslateListings] = useState<boolean>(true);
-  const [autoDraftMessages, setAutoDraftMessages] = useState<boolean>(true);
   const [currency, setCurrency] = useState<string>('EUR');
   const [idealRent, setIdealRent] = useState<number>(1200);
   const [maxRent, setMaxRent] = useState<number>(1500);
+  const [qualifyingThreshold, setQualifyingThreshold] = useState<number>(70);
   const [weights, setWeights] = useState<Record<string, number>>(getDefaultFeatureWeights());
 
+  // Preview only, and computed by the API so it cannot disagree with the
+  // signature the draft actually gets. Follows the language selected right now,
+  // even before it is saved.
+  const { data: household } = useHousehold(targetLanguage);
+  const derivedSignOff = household?.signOff ?? '';
+
   // Form State - Tenant Persona Bio Questions (Assembled into JSON at end of onboarding)
-  const [bioProfession, setBioProfession] = useState<string>('Senior Software Engineer moving for work. Very stable, verifiable salary.');
-  const [bioTimeline, setBioTimeline] = useState<string>('Searching for a long-term lease starting within 30 days. Ready to sign immediately upon inspection.');
-  const [bioHousehold, setBioHousehold] = useState<string>('Single professional adult, quiet and respectful lifestyle.');
-  const [bioPets, setBioPets] = useState<string>('No pets, non-smoker.');
-  const [bioNotes, setBioNotes] = useState<string>('Excellent credit score and previous landlord references available immediately upon request.');
+  // These start empty on purpose. Pre-filling them with sample biography would put
+  // invented facts about the user into their outreach messages the moment they hit
+  // Save — see the no-fabrication rule in CLAUDE.md. Each field has a placeholder
+  // showing the expected shape instead.
+  const [bioProfession, setBioProfession] = useState<string>('');
+  const [bioTimeline, setBioTimeline] = useState<string>('');
+  const [bioHousehold, setBioHousehold] = useState<string>('');
+  const [bioPets, setBioPets] = useState<string>('');
+  const [bioNotes, setBioNotes] = useState<string>('');
+  const [bioContract, setBioContract] = useState<string>('');
+  const [bioGuarantees, setBioGuarantees] = useState<string>('');
+  const [bioDocuments, setBioDocuments] = useState<string>('');
+  const [bioLeaseLength, setBioLeaseLength] = useState<string>('');
+  const [bioViewing, setBioViewing] = useState<string>('');
+
+  // Requirements with a natural unit, kept as figures rather than 1-5 weights.
+  const [sizeMin, setSizeMin] = useState<string>('');
+  const [sizeMax, setSizeMax] = useState<string>('');
+  const [bedroomsMin, setBedroomsMin] = useState<string>('');
+  const [bedroomsIdeal, setBedroomsIdeal] = useState<string>('');
+  const [bathroomsMin, setBathroomsMin] = useState<string>('');
+  const [bathroomsIdeal, setBathroomsIdeal] = useState<string>('');
 
   // Scroll to top whenever step or category changes to prevent vertical jumping
   useEffect(() => {
@@ -59,11 +88,19 @@ export default function OnboardingView() {
     if (profile) {
       if (profile.targetLocation) setTargetLocation(profile.targetLocation);
       if (profile.targetLanguage) setTargetLanguage(profile.targetLanguage);
-      if (profile.autoTranslateListings !== undefined) setAutoTranslateListings(profile.autoTranslateListings);
-      if (profile.autoDraftMessages !== undefined) setAutoDraftMessages(profile.autoDraftMessages);
       if (profile.currency) setCurrency(profile.currency);
       if (profile.idealRent) setIdealRent(profile.idealRent);
       if (profile.maxRent) setMaxRent(profile.maxRent);
+      if (profile.qualifyingThreshold) setQualifyingThreshold(profile.qualifyingThreshold);
+      const space = profile.spaceRequirements || {};
+      const num = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v));
+      setSizeMin(num(space.floorSizeSqm?.min));
+      setSizeMax(num(space.floorSizeSqm?.max));
+      setBedroomsMin(num(space.bedrooms?.minimum));
+      setBedroomsIdeal(num(space.bedrooms?.ideal));
+      setBathroomsMin(num(space.bathrooms?.minimum));
+      setBathroomsIdeal(num(space.bathrooms?.ideal));
+
       if (profile.featureWeights && Object.keys(profile.featureWeights).length > 0) {
         setWeights((prev) => ({ ...prev, ...profile.featureWeights }));
       }
@@ -75,7 +112,15 @@ export default function OnboardingView() {
           if (parsed.householdComposition !== undefined) setBioHousehold(parsed.householdComposition);
           if (parsed.pets !== undefined) setBioPets(parsed.pets);
           if (parsed.additionalNotes !== undefined) setBioNotes(parsed.additionalNotes);
+          if (parsed.contractType !== undefined) setBioContract(parsed.contractType);
+          if (parsed.financialGuarantees !== undefined) setBioGuarantees(parsed.financialGuarantees);
+          if (parsed.documentsReady !== undefined) setBioDocuments(parsed.documentsReady);
+          if (parsed.intendedLeaseLength !== undefined) setBioLeaseLength(parsed.intendedLeaseLength);
+          if (parsed.viewingAvailability !== undefined) setBioViewing(parsed.viewingAvailability);
         } catch {
+          // Older profiles hold plain prose rather than the structured JSON that
+          // onboarding writes. Keep it as free-form notes; the remaining fields
+          // stay empty rather than being filled with something the user never said.
           setBioNotes(profile.tenantPersona);
         }
       }
@@ -96,6 +141,14 @@ export default function OnboardingView() {
     setWeights(updated);
   };
 
+  /** Blank stays blank: an unanswered figure is not the same as zero. */
+  const toNumberOrNull = (raw: string): number | null => {
+    const trimmed = raw.trim();
+    if (trimmed === '') return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  };
+
   const getTenantPersonaJson = () => {
     return JSON.stringify(
       {
@@ -103,6 +156,11 @@ export default function OnboardingView() {
         moveInTimeline: bioTimeline,
         householdComposition: bioHousehold,
         pets: bioPets,
+        contractType: bioContract,
+        financialGuarantees: bioGuarantees,
+        documentsReady: bioDocuments,
+        intendedLeaseLength: bioLeaseLength,
+        viewingAvailability: bioViewing,
         additionalNotes: bioNotes,
       },
       null,
@@ -114,12 +172,16 @@ export default function OnboardingView() {
     await updateProfileMutation.mutateAsync({
       targetLocation,
       targetLanguage,
-      autoTranslateListings,
-      autoDraftMessages,
       currency,
       idealRent: Number(idealRent) || 1200,
       maxRent: Number(maxRent) || 1500,
+      qualifyingThreshold: Number(qualifyingThreshold) || 70,
       featureWeights: weights,
+      spaceRequirements: {
+        floorSizeSqm: { min: toNumberOrNull(sizeMin), max: toNumberOrNull(sizeMax) },
+        bedrooms: { minimum: toNumberOrNull(bedroomsMin), ideal: toNumberOrNull(bedroomsIdeal) },
+        bathrooms: { minimum: toNumberOrNull(bathroomsMin), ideal: toNumberOrNull(bathroomsIdeal) },
+      },
       tenantPersona: getTenantPersonaJson(),
     });
     setLocation('/');
@@ -160,7 +222,7 @@ export default function OnboardingView() {
             </span>
             <h1 className="text-base sm:text-lg font-extrabold text-zinc-100 tracking-tight leading-snug mt-0.5 break-words">
               {step === 1 && 'Location & Communication'}
-              {step === 2 && 'Financial Boundaries'}
+              {step === 2 && 'Budget & Space'}
               {step === 3 && 'Matrix Explained'}
               {step === 4 && 'Preference Matrix'}
               {step === 5 && 'Tenant Outreach Bio'}
@@ -172,14 +234,19 @@ export default function OnboardingView() {
         <div className="flex items-center gap-2.5">
           {step === 4 && (
             <span className="text-xs font-mono font-bold text-zinc-400 bg-zinc-900 px-3 py-1.5 rounded-xl border border-zinc-800 shrink-0">
-              {activeCategoryIndex + 1} out of 6
+              {activeCategoryIndex + 1} out of {PREFERENCE_CATEGORIES.length}
             </span>
           )}
-          <Link href="/">
-            <button title="Exit to Pipeline" className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 border border-zinc-800 flex items-center justify-center transition-all cursor-pointer shrink-0">
-              <X className="w-4 h-4 sm:w-5 sm:h-5" />
-            </button>
-          </Link>
+          {/* No way out on a first run: without criteria there is no pipeline to
+              exit to, and the dashboard would score listings against defaults the
+              user never chose. Once a profile exists this is an ordinary edit. */}
+          {profile?.exists && (
+            <Link href="/">
+              <button title="Exit to Pipeline" className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 border border-zinc-800 flex items-center justify-center transition-all cursor-pointer shrink-0">
+                <X className="w-4 h-4 sm:w-5 sm:h-5" />
+              </button>
+            </Link>
+          )}
         </div>
       </header>
 
@@ -224,41 +291,6 @@ export default function OnboardingView() {
               </select>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 pt-2">
-              <div 
-                onClick={() => setAutoTranslateListings(!autoTranslateListings)}
-                className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl flex items-center justify-between cursor-pointer hover:border-zinc-700 transition-all min-h-[56px] active:scale-[0.99]"
-              >
-                <span className="text-sm font-semibold text-zinc-200 pr-2">
-                  Auto-translate listings to English
-                </span>
-                <button
-                  type="button"
-                  className={`w-12 h-6 rounded-full p-1 transition-colors flex items-center shrink-0 ${
-                    autoTranslateListings ? 'bg-emerald-500 justify-end' : 'bg-zinc-800 justify-start'
-                  }`}
-                >
-                  <div className="w-4 h-4 rounded-full bg-white shadow-md" />
-                </button>
-              </div>
-
-              <div 
-                onClick={() => setAutoDraftMessages(!autoDraftMessages)}
-                className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl flex items-center justify-between cursor-pointer hover:border-zinc-700 transition-all min-h-[56px] active:scale-[0.99]"
-              >
-                <span className="text-sm font-semibold text-zinc-200 pr-2">
-                  AI outreach message drafting
-                </span>
-                <button
-                  type="button"
-                  className={`w-12 h-6 rounded-full p-1 transition-colors flex items-center shrink-0 ${
-                    autoDraftMessages ? 'bg-emerald-500 justify-end' : 'bg-zinc-800 justify-start'
-                  }`}
-                >
-                  <div className="w-4 h-4 rounded-full bg-white shadow-md" />
-                </button>
-              </div>
-            </div>
           </div>
         )}
 
@@ -326,6 +358,122 @@ export default function OnboardingView() {
                 </div>
               </div>
             </div>
+
+            <div className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-5 sm:p-6 rounded-2xl space-y-3 mt-4">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-blue-400 uppercase tracking-wider">
+                  Qualifying score
+                </label>
+                <span className="text-xs font-mono text-zinc-500">Pass mark</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min={40}
+                  max={95}
+                  step={1}
+                  value={qualifyingThreshold}
+                  onChange={(e) => setQualifyingThreshold(Number(e.target.value))}
+                  className="flex-1 h-2 accent-blue-500 cursor-pointer"
+                />
+                <span className="text-xl font-extrabold text-zinc-100 font-mono w-16 text-right">
+                  {qualifyingThreshold}%
+                </span>
+              </div>
+              <p className="text-xs text-zinc-500 leading-relaxed">
+                A listing needs this score to land in Meeting Criteria. Lower it if too
+                little is getting through; raise it if you are drowning in matches. You can
+                still pursue anything that falls short &mdash; it just will not be presented
+                as a match.
+              </p>
+            </div>
+
+            <div className="space-y-3 pt-2">
+              <div className="space-y-1">
+                <h3 className="text-sm font-extrabold text-zinc-100 tracking-tight flex items-center gap-1.5">
+                  <Ruler className="w-4 h-4 text-emerald-400" />
+                  Space requirements
+                </h3>
+                <p className="text-xs text-zinc-500 leading-relaxed">
+                  These are figures, not priorities. More floor space is not simply better —
+                  past a point it is more to heat, clean and furnish — so give the range that
+                  actually works for you. Leave anything blank to say you have no limit.
+                </p>
+              </div>
+
+              <div className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl space-y-3">
+                <label className="text-xs font-bold text-zinc-300 uppercase tracking-wider">Floor area (m²)</label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number" inputMode="numeric" min={0}
+                    value={sizeMin} onChange={(e) => setSizeMin(e.target.value)}
+                    placeholder="40"
+                    className="w-full bg-zinc-950 sm:bg-zinc-900 border border-zinc-800 focus:border-emerald-500 rounded-xl px-3 py-3 text-[16px] sm:text-sm font-bold text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 min-h-[48px]"
+                  />
+                  <span className="text-zinc-500 text-sm font-bold shrink-0">to</span>
+                  <input
+                    type="number" inputMode="numeric" min={0}
+                    value={sizeMax} onChange={(e) => setSizeMax(e.target.value)}
+                    placeholder="75"
+                    className="w-full bg-zinc-950 sm:bg-zinc-900 border border-zinc-800 focus:border-emerald-500 rounded-xl px-3 py-3 text-[16px] sm:text-sm font-bold text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 min-h-[48px]"
+                  />
+                </div>
+                {sizeMin !== '' && sizeMax !== '' && Number(sizeMin) > Number(sizeMax) && (
+                  <p className="text-xs text-amber-400">Minimum is larger than the maximum.</p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl space-y-3">
+                  <label className="text-xs font-bold text-zinc-300 uppercase tracking-wider">Bedrooms</label>
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 space-y-1">
+                      <span className="text-[11px] text-zinc-500 font-medium">Minimum</span>
+                      <input
+                        type="number" inputMode="numeric" min={0}
+                        value={bedroomsMin} onChange={(e) => setBedroomsMin(e.target.value)}
+                        placeholder="1"
+                        className="w-full bg-zinc-950 sm:bg-zinc-900 border border-zinc-800 focus:border-emerald-500 rounded-xl px-3 py-3 text-[16px] sm:text-sm font-bold text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 min-h-[48px]"
+                      />
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <span className="text-[11px] text-zinc-500 font-medium">Ideal</span>
+                      <input
+                        type="number" inputMode="numeric" min={0}
+                        value={bedroomsIdeal} onChange={(e) => setBedroomsIdeal(e.target.value)}
+                        placeholder="2"
+                        className="w-full bg-zinc-950 sm:bg-zinc-900 border border-zinc-800 focus:border-emerald-500 rounded-xl px-3 py-3 text-[16px] sm:text-sm font-bold text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 min-h-[48px]"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl space-y-3">
+                  <label className="text-xs font-bold text-zinc-300 uppercase tracking-wider">Bathrooms</label>
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1 space-y-1">
+                      <span className="text-[11px] text-zinc-500 font-medium">Minimum</span>
+                      <input
+                        type="number" inputMode="numeric" min={0}
+                        value={bathroomsMin} onChange={(e) => setBathroomsMin(e.target.value)}
+                        placeholder="1"
+                        className="w-full bg-zinc-950 sm:bg-zinc-900 border border-zinc-800 focus:border-emerald-500 rounded-xl px-3 py-3 text-[16px] sm:text-sm font-bold text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 min-h-[48px]"
+                      />
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <span className="text-[11px] text-zinc-500 font-medium">Ideal</span>
+                      <input
+                        type="number" inputMode="numeric" min={0}
+                        value={bathroomsIdeal} onChange={(e) => setBathroomsIdeal(e.target.value)}
+                        placeholder="1"
+                        className="w-full bg-zinc-950 sm:bg-zinc-900 border border-zinc-800 focus:border-emerald-500 rounded-xl px-3 py-3 text-[16px] sm:text-sm font-bold text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 min-h-[48px]"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
         )}
 
@@ -347,9 +495,9 @@ export default function OnboardingView() {
                   1-3
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-zinc-100">Standard Preferences (Low to Neutral)</h3>
+                  <h3 className="text-sm font-bold text-zinc-100">Not Scored (Low to Neutral)</h3>
                   <p className="text-xs text-zinc-400 mt-0.5 leading-relaxed">
-                    Default baseline scoring. Features rated 3 are considered standard amenities with balanced weight.
+                    Not scored at all. Anything you weight 1&ndash;3 is recorded but left out of the calculation, so the score reflects only what you said matters.
                   </p>
                 </div>
               </div>
@@ -361,7 +509,7 @@ export default function OnboardingView() {
                 <div>
                   <h3 className="text-sm font-bold text-zinc-100">High Priority Multipliers</h3>
                   <p className="text-xs text-zinc-400 mt-0.5 leading-relaxed">
-                    Provides a significant mathematical boost. Properties featuring these amenities will rise to the top of your pipeline.
+                    Scored and compensatory: a strong result here can offset a weaker one elsewhere, and vice versa.
                   </p>
                 </div>
               </div>
@@ -379,7 +527,7 @@ export default function OnboardingView() {
                     </span>
                   </div>
                   <p className="text-xs text-zinc-400 mt-0.5 leading-relaxed">
-                    Inviolable constraints. If a property scores poorly on a weight-5 feature, it is automatically disqualified and grayed out without wasting AI outreach credits.
+                    Scored, and heavily penalised when missed. Rating one below 3/5 cuts the whole score by up to 45%, which almost always drops a listing out &mdash; but it is still scored and still shown, with the reason and the exact points lost, rather than disappearing.
                   </p>
                 </div>
               </div>
@@ -408,10 +556,14 @@ export default function OnboardingView() {
             </div>
 
             {/* Compact Category Switcher (A through F) */}
-            <div className="grid grid-cols-6 gap-1.5 bg-zinc-900/50 p-1.5 rounded-xl border border-zinc-800/80">
+            <div
+              className="grid gap-1.5 bg-zinc-900/50 p-1.5 rounded-xl border border-zinc-800/80"
+              style={{ gridTemplateColumns: `repeat(${PREFERENCE_CATEGORIES.length}, minmax(0, 1fr))` }}
+            >
               {PREFERENCE_CATEGORIES.map((cat, idx) => {
-                const letters = ['A', 'B', 'C', 'D', 'E', 'F'];
-                const letter = letters[idx] || `${idx + 1}`;
+                // Derived from the data, not a fixed list — adding a category must
+                // not silently fall back to showing a number.
+                const letter = String.fromCharCode(65 + idx);
                 return (
                   <button
                     key={cat.id}
@@ -542,6 +694,76 @@ export default function OnboardingView() {
               />
             </div>
 
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
+                <FileSignature className="w-3.5 h-3.5 text-emerald-400" />
+                Employment contract type and length
+              </label>
+              <textarea
+                rows={3}
+                value={bioContract}
+                onChange={(e) => setBioContract(e.target.value)}
+                placeholder="e.g., Permanent contract (indefinido), 3 years with current employer"
+                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
+                <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
+                Financial guarantees you can offer
+              </label>
+              <textarea
+                rows={3}
+                value={bioGuarantees}
+                onChange={(e) => setBioGuarantees(e.target.value)}
+                placeholder="e.g., Guarantor available, or 2 months deposit plus 1 month upfront"
+                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
+                <FolderCheck className="w-3.5 h-3.5 text-purple-400" />
+                Documents you can provide immediately
+              </label>
+              <textarea
+                rows={3}
+                value={bioDocuments}
+                onChange={(e) => setBioDocuments(e.target.value)}
+                placeholder="e.g., Last 3 payslips, employment contract, tax return, passport/NIE"
+                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
+                <CalendarClock className="w-3.5 h-3.5 text-amber-400" />
+                How long you intend to stay
+              </label>
+              <textarea
+                rows={3}
+                value={bioLeaseLength}
+                onChange={(e) => setBioLeaseLength(e.target.value)}
+                placeholder="e.g., Looking for a minimum of 2–3 years, happy to sign long"
+                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-emerald-400" />
+                When you can view the property
+              </label>
+              <textarea
+                rows={3}
+                value={bioViewing}
+                onChange={(e) => setBioViewing(e.target.value)}
+                placeholder="e.g., Weekday evenings after 18:00 and any time at weekends"
+                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
+              />
+            </div>
             <div className="space-y-2">
               <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
                 <FileText className="w-3.5 h-3.5 text-emerald-400" />
@@ -571,7 +793,7 @@ export default function OnboardingView() {
                   </span>
                 </div>
                 <p className="text-xs text-zinc-400">
-                  Auto-translate: <strong className="text-zinc-200">{autoTranslateListings ? 'Yes' : 'No'}</strong> &bull; AI Drafts: <strong className="text-zinc-200">{autoDraftMessages ? 'Yes' : 'No'}</strong>
+                  Outreach is drafted automatically for every qualified lead.
                 </p>
               </div>
 
@@ -612,8 +834,33 @@ export default function OnboardingView() {
 
               <div className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl space-y-1.5 sm:col-span-2">
                 <span className="text-xs font-mono font-bold text-purple-400 uppercase tracking-wider block">4. Tenant Outreach Profile</span>
-                <p className="text-sm font-semibold text-zinc-200 break-words">{bioProfession}</p>
-                <p className="text-xs text-zinc-400 break-words">Move-in: <span className="text-zinc-300">{bioTimeline}</span> &bull; {bioPets}</p>
+                {bioProfession || bioTimeline || bioHousehold || bioPets || bioNotes ? (
+                  <>
+                    {bioProfession && <p className="text-sm font-semibold text-zinc-200 break-words">{bioProfession}</p>}
+                    {(bioTimeline || bioPets) && (
+                      <p className="text-xs text-zinc-400 break-words">
+                        {bioTimeline && <>Move-in: <span className="text-zinc-300">{bioTimeline}</span></>}
+                        {bioTimeline && bioPets && ' • '}
+                        {bioPets}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-zinc-500 break-words">
+                    Not filled in. Outreach drafts will rely on the listing and your criteria alone —
+                    go back to step 5 to add your background.
+                  </p>
+                )}
+                <p className="text-xs text-zinc-400 break-words pt-0.5">
+                  Signed off as:{' '}
+                  {derivedSignOff ? (
+                    <strong className="text-zinc-200">{derivedSignOff}</strong>
+                  ) : (
+                    <span className="text-amber-400/90">
+                      no household names set — drafts will end without a signature
+                    </span>
+                  )}
+                </p>
               </div>
             </div>
           </div>

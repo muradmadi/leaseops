@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './api';
-import type { Apartment, NewApartment } from '@leaseops/db';
+import type { Apartment, PipelineStage } from '@leaseops/db';
 
 /**
  * Custom TanStack Query hook to fetch all apartment listings.
@@ -44,10 +44,18 @@ export function useCreateApartment() {
 
   return useMutation({
     mutationFn: async (payload: {
-      url: string;
-      title?: string;
-      price?: number;
+      /** Reference link only — the API never fetches it. */
+      url?: string;
+      title: string;
+      price: number;
       currency?: string;
+      description?: string;
+      floorSizeSqm?: number | null;
+      totalRooms?: number | null;
+      bathrooms?: number | null;
+      floorLevel?: string;
+      neighborhood?: string;
+      city?: string;
       featureRatings?: Record<string, number>;
       roomScores?: Record<string, number>;
     }) => {
@@ -58,6 +66,130 @@ export function useCreateApartment() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apartments'] });
+    },
+  });
+}
+
+/** The archive — soft-deleted listings, surfaced in Settings. */
+export function useArchivedApartments() {
+  return useQuery<Apartment[], Error>({
+    queryKey: ['apartments', 'archived'],
+    queryFn: () => apiFetch<Apartment[]>('/apartments/archived'),
+    staleTime: 30 * 1000,
+  });
+}
+
+export function useRestoreApartment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiFetch<Apartment>(`/apartments/${id}/restore`, { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
+    },
+  });
+}
+
+/** Destroys a listing and its conversation. Only offered from the archive. */
+export function usePermanentlyDeleteApartment() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ success: boolean }>(`/apartments/${id}/permanent`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
+    },
+  });
+}
+
+/**
+ * Marks a listing as pursued, or stops pursuing it.
+ *
+ * Activating a listing that fell short releases the AI review and outreach draft
+ * the pipeline withheld. It does not change the listing's bucket — the score
+ * decides that, and choosing to chase a flat does not make it qualify.
+ */
+export function useSetApartmentActive() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ id, isActive }: { id: string; isActive: boolean }) =>
+      apiFetch<Apartment>(`/apartments/${id}/active`, {
+        method: 'PATCH',
+        body: JSON.stringify({ isActive }),
+      }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
+      queryClient.invalidateQueries({ queryKey: ['apartments', variables.id] });
+      queryClient.invalidateQueries({ queryKey: ['messages', variables.id] });
+    },
+  });
+}
+
+/**
+ * Edits a listing in full and re-scores it.
+ *
+ * The score is expected to move on save — that is the reason this exists. The AI
+ * review is deliberately not regenerated; it is released on demand by Activate
+ * so a typo fix does not cost a call.
+ */
+export function useUpdateApartment() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ id, ...payload }: { id: string } & Record<string, unknown>) =>
+      apiFetch<Apartment>(`/apartments/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
+      queryClient.invalidateQueries({ queryKey: ['apartments', variables.id] });
+    },
+  });
+}
+
+/**
+ * Pulls a qualifying listing into the yellow zone with a written reason, or
+ * clears that override by passing `null`.
+ *
+ * The score is untouched. A listing keeps its percentage and its QUALIFIED
+ * status — the demotion is your judgement recorded alongside the measurement,
+ * not a rewrite of it.
+ */
+export function useSetApartmentAside() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ id, reason }: { id: string; reason: string | null }) =>
+      apiFetch<Apartment>(`/apartments/${id}/set-aside`, {
+        method: 'PATCH',
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
+      queryClient.invalidateQueries({ queryKey: ['apartments', variables.id] });
+    },
+  });
+}
+
+/**
+ * Moves a listing along the outreach pipeline.
+ *
+ * Set by hand only. Nothing in the app advances it, so it stays a record of what
+ * you actually did rather than what the app assumes you did.
+ */
+export function useSetApartmentStage() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ id, pipelineStage }: { id: string; pipelineStage: PipelineStage }) =>
+      apiFetch<Apartment>(`/apartments/${id}/stage`, {
+        method: 'PATCH',
+        body: JSON.stringify({ pipelineStage }),
+      }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
+      queryClient.invalidateQueries({ queryKey: ['apartments', variables.id] });
     },
   });
 }

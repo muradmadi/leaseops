@@ -7,21 +7,40 @@ import ChatView from './views/ChatView.tsx';
 import LoginView from './views/LoginView.tsx';
 import SettingsView from './views/SettingsView.tsx';
 import { useAuth } from './lib/useAuth';
+import { useProfile } from './lib/useProfile';
 
-export default function App() {
-  const { data: authState, isLoading } = useAuth();
+function FullScreenLoader({ message }: { message: string }) {
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center p-6 font-sans antialiased">
+      <div className="w-10 h-10 border-3 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin mb-4" />
+      <p className="text-sm font-medium text-zinc-400 animate-pulse">{message}</p>
+    </div>
+  );
+}
+
+/**
+ * Everything behind the login gate.
+ *
+ * A household with no profile has no criteria, so nothing downstream can work:
+ * the MCDA engine would score against defaults the user never chose, and the
+ * outreach draft would have no persona. Onboarding is therefore mandatory rather
+ * than a prompt that can be dismissed — this covers a brand new household and
+ * equally someone who joined a household whose partner had not onboarded yet.
+ *
+ * `useProfile` lives here rather than in `App` so it only ever runs for an
+ * authenticated caller; mounted higher it would fire a guaranteed 401.
+ */
+function AuthenticatedApp() {
+  const { data: profile, isLoading, isError } = useProfile();
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center p-6 font-sans antialiased">
-        <div className="w-10 h-10 border-3 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin mb-4" />
-        <p className="text-sm font-medium text-zinc-400 animate-pulse">Initializing RevOps Session...</p>
-      </div>
-    );
+    return <FullScreenLoader message="Loading your criteria..." />;
   }
 
-  if (!authState?.authenticated) {
-    return <LoginView />;
+  // On a failed profile fetch, fall through to onboarding rather than the
+  // dashboard: showing an unscored pipeline would be worse than asking again.
+  if (isError || !profile?.exists) {
+    return <OnboardingView />;
   }
 
   return (
@@ -44,4 +63,18 @@ export default function App() {
       </Switch>
     </div>
   );
+}
+
+export default function App() {
+  const { data: authState, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <FullScreenLoader message="Initializing RevOps Session..." />;
+  }
+
+  if (!authState?.authenticated) {
+    return <LoginView />;
+  }
+
+  return <AuthenticatedApp />;
 }

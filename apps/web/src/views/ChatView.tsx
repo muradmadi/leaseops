@@ -6,15 +6,11 @@ import {
   X,
   MessageSquare,
   Check,
-  Send,
   Loader2,
   ShieldAlert,
   Sparkles,
   User,
   Bot,
-  Clock,
-  PhoneCall,
-  MoreVertical,
   Pencil,
   Trash2
 } from 'lucide-react';

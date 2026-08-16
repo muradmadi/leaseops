@@ -6,12 +6,17 @@ export interface ProfileData {
   username?: string;
   targetLocation: string;
   targetLanguage: string;
-  autoTranslateListings: boolean;
   autoDraftMessages: boolean;
   currency: string;
   idealRent: number;
   maxRent: number;
+  qualifyingThreshold: number;
   featureWeights: Record<string, number>;
+  spaceRequirements: {
+    floorSizeSqm?: { min?: number | null; max?: number | null };
+    bedrooms?: { minimum?: number | null; ideal?: number | null };
+    bathrooms?: { minimum?: number | null; ideal?: number | null };
+  };
   tenantPersona: string;
 }
 

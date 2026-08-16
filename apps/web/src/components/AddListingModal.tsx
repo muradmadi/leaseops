@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
-  Plus,
+  FileText,
   X,
   Globe,
   Tag,
@@ -19,13 +19,20 @@ import {
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
-import { useCreateApartment, useUpdateApartmentRatings } from '../lib/useApartments';
+import { useCreateApartment, useUpdateApartmentRatings, useUpdateApartment } from '../lib/useApartments';
+import type { Apartment } from '@leaseops/db';
 import { useProfile } from '../lib/useProfile';
 import { PREFERENCE_CATEGORIES, type PreferenceFeature } from '../lib/preferenceMatrixData';
 
 interface AddListingModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /**
+   * Pass a listing to edit it instead of creating one. Every field and rating is
+   * prefilled from the record and the score is recomputed on save — a viewing
+   * routinely invalidates what the advert claimed.
+   */
+  editing?: Apartment | null;
 }
 
 type Step = 1 | 2 | 3 | 4 | 5;
@@ -61,12 +68,14 @@ const getGradeBtnClass = (val: number, isSelected: boolean) => {
   }
 };
 
-export default function AddListingModal({ isOpen, onClose }: AddListingModalProps) {
+export default function AddListingModal({ isOpen, onClose, editing }: AddListingModalProps) {
+  const isEditing = !!editing;
+  const updateApartmentMutation = useUpdateApartment();
   const { data: profile } = useProfile();
   const createApartmentMutation = useCreateApartment();
   const updateRatingsMutation = useUpdateApartmentRatings();
 
-  // Track backend apartment ID created in Step 1 for background Scrapfly extraction
+  // Set only when a listing was already created (re-rating an existing one).
   const [createdApartmentId, setCreatedApartmentId] = useState<string | null>(null);
 
   // Step state
@@ -76,6 +85,13 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
   const [urlInput, setUrlInput] = useState('');
   const [titleInput, setTitleInput] = useState('');
   const [priceInput, setPriceInput] = useState('');
+  const [descriptionInput, setDescriptionInput] = useState('');
+  const [sizeInput, setSizeInput] = useState('');
+  const [roomsInput, setRoomsInput] = useState('');
+  const [bathroomsInput, setBathroomsInput] = useState('');
+  const [floorInput, setFloorInput] = useState('');
+  const [neighborhoodInput, setNeighborhoodInput] = useState('');
+  const [cityInput, setCityInput] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
 
   // Feature ratings (for weight 4 and 5 features)
@@ -111,33 +127,73 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
     return { dealbreakerFeatures: dealbreakers, highPriorityFeatures: highPriorities };
   }, [profile]);
 
+  // Prefilled on open rather than in the parent, so the modal owns its own state
+  // and cannot be left showing a previous listing's figures.
+  //
+  // Keyed on the listing *id*, deliberately not on the object. `useApartment`
+  // refetches every 3s, so depending on `editing` itself would re-run this on a
+  // new object identity every poll and wipe whatever was being typed. Prefilling
+  // once per listing per open is the actual intent.
+  useEffect(() => {
+    if (!isOpen || !editing) return;
+    const ext = (editing.extractedData || {}) as any;
+    const metrics = ext.unitMetrics || {};
+    setUrlInput(editing.url?.startsWith('manual:') ? '' : editing.url || '');
+    setTitleInput(editing.title || '');
+    setPriceInput(editing.price != null ? String(editing.price) : '');
+    setDescriptionInput(ext.description || '');
+    setSizeInput(metrics.floorSizeSqm != null ? String(metrics.floorSizeSqm) : '');
+    setRoomsInput(metrics.totalRooms != null ? String(metrics.totalRooms) : '');
+    setBathroomsInput(metrics.bathrooms != null ? String(metrics.bathrooms) : '');
+    // These three live under unitMetrics/location, not at the top level. Reading
+    // the wrong path blanked the fields, and saving then wrote the blanks back
+    // over real data — a silent delete disguised as an edit.
+    setFloorInput(metrics.floorLevel || '');
+    setNeighborhoodInput(ext.location?.neighborhood || '');
+    setCityInput(ext.location?.city || '');
+    setRoomScores({
+      livingRoom: 3, bedroom: 3, kitchen: 3, bathroom: 3, entryway: 3,
+      ...((editing.roomScores || {}) as Record<string, number>),
+    });
+    // Ratings come off the stored evaluations, which is where the real values
+    // live — the payload that produced them is not kept.
+    const evaluations = ((editing.featureScores || {}) as any)?.evaluations || [];
+    const ratings: Record<string, number> = {};
+    for (const e of evaluations) {
+      if (e?.featureId && !String(e.featureId).startsWith('__') && typeof e.rating === 'number') {
+        ratings[e.featureId] = e.rating;
+      }
+    }
+    setFeatureRatings(ratings);
+    setStep(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, editing?.id]);
+
   if (!isOpen) return null;
+
+  /** Blank stays blank — an unentered figure is not zero. */
+  const numOrNull = (raw: string): number | null => {
+    const t = raw.trim();
+    if (t === '') return null;
+    const n = Number(t);
+    return Number.isFinite(n) ? n : null;
+  };
 
   const handleNextFromStep1 = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
 
-    if (!urlInput.trim()) {
-      setErrorMessage('Please enter a valid property listing URL.');
+    if (!titleInput.trim()) {
+      setErrorMessage('Give the listing a title so you can recognise it later.');
+      return;
+    }
+    if (numOrNull(priceInput) === null || Number(priceInput) <= 0) {
+      setErrorMessage('Enter the monthly rent — the budget check needs a real figure.');
       return;
     }
 
-    // Trigger backend ingestion and background Scrapfly scraping immediately!
-    if (!createdApartmentId) {
-      try {
-        const created = await createApartmentMutation.mutateAsync({
-          url: urlInput.trim(),
-          title: titleInput.trim() || undefined,
-          price: priceInput ? parseFloat(priceInput) : undefined,
-          currency: profile?.currency || 'EUR',
-        });
-        setCreatedApartmentId(created.id);
-      } catch (err: any) {
-        setErrorMessage(err.message || 'Failed to create listing');
-        return;
-      }
-    }
-
+    // Nothing is created yet. The listing is saved once, at the end, with your
+    // ratings included, so it is never scored twice or shown mid-evaluation.
     if (dealbreakerFeatures.length > 0) {
       setDealbreakerIndex(0);
       setStep(2);
@@ -148,16 +204,6 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
     }
   };
 
-  const handleDealbreakerResponse = (featId: string, value: number) => {
-    setFeatureRatings((prev) => ({ ...prev, [featId]: value }));
-    if (dealbreakerIndex < dealbreakerFeatures.length - 1) {
-      setDealbreakerIndex((prev) => prev + 1);
-    } else if (highPriorityFeatures.length > 0) {
-      setStep(3);
-    } else {
-      setStep(4);
-    }
-  };
 
   const handlePrevFromDealbreakers = () => {
     if (dealbreakerIndex > 0) {
@@ -205,6 +251,14 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
     setUrlInput('');
     setTitleInput('');
     setPriceInput('');
+    setDescriptionInput('');
+    setSizeInput('');
+    setRoomsInput('');
+    setBathroomsInput('');
+    setFloorInput('');
+    setNeighborhoodInput('');
+    setCityInput('');
+    setErrorMessage('');
     setFeatureRatings({});
     setRoomScores({ livingRoom: 3, bedroom: 3, kitchen: 3, bathroom: 3, entryway: 3 });
     setCreatedApartmentId(null);
@@ -215,7 +269,24 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
   const handleSubmitFinal = async () => {
     setErrorMessage('');
     try {
-      if (createdApartmentId) {
+      if (isEditing && editing) {
+        await updateApartmentMutation.mutateAsync({
+          id: editing.id,
+          url: urlInput.trim() || undefined,
+          title: titleInput.trim(),
+          price: parseFloat(priceInput),
+          currency: profile?.currency || 'EUR',
+          description: descriptionInput,
+          floorSizeSqm: numOrNull(sizeInput),
+          totalRooms: numOrNull(roomsInput),
+          bathrooms: numOrNull(bathroomsInput),
+          floorLevel: floorInput.trim(),
+          neighborhood: neighborhoodInput.trim(),
+          city: cityInput.trim(),
+          featureRatings,
+          roomScores,
+        });
+      } else if (createdApartmentId) {
         await updateRatingsMutation.mutateAsync({
           id: createdApartmentId,
           featureRatings,
@@ -223,19 +294,31 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
         });
       } else {
         await createApartmentMutation.mutateAsync({
-          url: urlInput.trim(),
-          title: titleInput.trim() || undefined,
-          price: priceInput ? parseFloat(priceInput) : undefined,
+          url: urlInput.trim() || undefined,
+          title: titleInput.trim(),
+          price: parseFloat(priceInput),
           currency: profile?.currency || 'EUR',
+          description: descriptionInput,
+          floorSizeSqm: numOrNull(sizeInput),
+          totalRooms: numOrNull(roomsInput),
+          bathrooms: numOrNull(bathroomsInput),
+          floorLevel: floorInput.trim(),
+          neighborhood: neighborhoodInput.trim(),
+          city: cityInput.trim(),
           featureRatings,
           roomScores,
         });
+      }
+      if (isEditing) {
+        handleCloseModal();
+        return;
       }
       setStep(5);
     } catch (err: any) {
       setErrorMessage(err.message || 'Failed to submit apartment listing.');
     }
   };
+
 
   const setRating = (featureId: string, rating: number) => {
     setFeatureRatings((prev) => ({ ...prev, [featureId]: rating }));
@@ -253,6 +336,12 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
   if (step === 4 || step === 5) currentStepNum = totalSteps;
   const progressPercent = Math.round((currentStepNum / totalSteps) * 100);
 
+  /** Any of the three save paths in flight. Read by both save buttons. */
+  const isSaving =
+    createApartmentMutation.isPending ||
+    updateRatingsMutation.isPending ||
+    updateApartmentMutation.isPending;
+
   return (
     <div className="fixed inset-0 z-50 min-h-[100dvh] bg-zinc-950 text-zinc-100 flex flex-col justify-between font-sans selection:bg-blue-500/20 selection:text-blue-400 overflow-y-auto">
       {/* Top Navigation & Progress */}
@@ -264,7 +353,7 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
             </div>
             <div>
               <h1 className="text-base sm:text-lg font-extrabold text-zinc-100 tracking-tight leading-snug">
-                Apartment Evaluation Wizard
+                {isEditing ? 'Edit Listing' : 'Apartment Evaluation Wizard'}
               </h1>
               <p className="text-xs text-zinc-400">
                 Step {currentStepNum} of {totalSteps}: {step === 1 && 'Basic Listing Info'}
@@ -276,13 +365,28 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
             </div>
           </div>
 
-          <button
-            onClick={handleCloseModal}
-            title="Cancel & Exit"
-            className="w-10 h-10 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 border border-zinc-800 flex items-center justify-center transition-all cursor-pointer shrink-0 active:scale-95"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {isEditing && step !== 5 && (
+              <button
+                type="button"
+                onClick={handleSubmitFinal}
+                disabled={isSaving}
+                title="Save changes and re-score"
+                className="h-10 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-zinc-950 font-extrabold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-50 shadow-lg shadow-emerald-500/20"
+              >
+                {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                <span>{isSaving ? 'Saving' : 'Save'}</span>
+              </button>
+            )}
+
+            <button
+              onClick={handleCloseModal}
+              title="Cancel & Exit"
+              className="w-10 h-10 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 border border-zinc-800 flex items-center justify-center transition-all cursor-pointer shrink-0 active:scale-95"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Progress bar */}
@@ -305,81 +409,120 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
 
         {/* SCREEN 1: BASIC INFO */}
         {step === 1 && (
-          <form onSubmit={handleNextFromStep1} className="space-y-6 sm:space-y-8 animate-in fade-in duration-300">
+          <form onSubmit={handleNextFromStep1} className="space-y-6 animate-in fade-in duration-300">
             <div className="space-y-2">
               <h2 className="text-xl sm:text-2xl font-extrabold text-zinc-100 tracking-tight">
-                Step 1: Property Listing Details
+                Step 1: Listing Details
               </h2>
               <p className="text-sm text-zinc-400 leading-relaxed">
-                Enter the link to the property. We will evaluate it against your personalized MCDA preferences in the next steps.
+                Paste the description straight from the portal and fill in what you know.
+                Anything you leave blank is recorded as not stated rather than guessed at.
               </p>
             </div>
 
-            <div className="space-y-6 bg-zinc-900/40 border border-zinc-800/80 rounded-3xl p-6 sm:p-8">
-              <div className="space-y-2">
-                <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                  <Globe className="w-4 h-4 text-blue-400" />
-                  Property Listing URL <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="url"
-                  required
-                  placeholder="https://www.immobilienscout24.de/expose/12345678"
-                  value={urlInput}
-                  onChange={(e) => setUrlInput(e.target.value)}
-                  className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl px-4 py-4 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[56px]"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
+            <div className="space-y-5 bg-zinc-900/40 border border-zinc-800/80 rounded-3xl p-5 sm:p-7">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
                     <Tag className="w-4 h-4 text-emerald-400" />
-                    Custom Title (Optional)
+                    Title <span className="text-red-400">*</span>
                   </label>
                   <input
-                    type="text"
-                    placeholder="e.g. Modern Mitte Loft with Balcony"
-                    value={titleInput}
-                    onChange={(e) => setTitleInput(e.target.value)}
-                    className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-emerald-500 rounded-2xl px-4 py-4 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all min-h-[56px]"
+                    type="text" required
+                    placeholder="e.g. Estudio en Palacio, Madrid"
+                    value={titleInput} onChange={(e) => setTitleInput(e.target.value)}
+                    className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl px-4 py-3.5 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[52px]"
                   />
                 </div>
-
                 <div className="space-y-2">
                   <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
                     <DollarSign className="w-4 h-4 text-amber-400" />
-                    Monthly Rent ({profile?.currency || 'EUR'}) (Optional)
+                    Monthly rent ({profile?.currency || 'EUR'}) <span className="text-red-400">*</span>
                   </label>
                   <input
-                    type="number"
-                    step="any"
-                    placeholder="e.g. 1350"
-                    value={priceInput}
-                    onChange={(e) => setPriceInput(e.target.value)}
-                    className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-amber-500 rounded-2xl px-4 py-4 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/20 transition-all min-h-[56px]"
+                    type="number" step="any" min={0} required inputMode="decimal"
+                    placeholder="1350"
+                    value={priceInput} onChange={(e) => setPriceInput(e.target.value)}
+                    className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl px-4 py-3.5 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[52px]"
                   />
                 </div>
               </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <FileText className="w-4 h-4 text-blue-400" />
+                  Listing description
+                </label>
+                <textarea
+                  rows={7}
+                  placeholder="Paste the listing text here..."
+                  value={descriptionInput} onChange={(e) => setDescriptionInput(e.target.value)}
+                  className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[150px] leading-relaxed resize-y"
+                />
+                <p className="text-xs text-zinc-500 leading-relaxed">
+                  Used for the AI review, the compromise summary and your outreach draft.
+                  It is treated as untrusted text and never rendered as HTML.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider">Size (m²)</label>
+                  <input type="number" min={0} inputMode="numeric" placeholder="34"
+                    value={sizeInput} onChange={(e) => setSizeInput(e.target.value)} className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl px-4 py-3.5 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[52px]" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider">Rooms</label>
+                  <input type="number" min={0} inputMode="numeric" placeholder="1"
+                    value={roomsInput} onChange={(e) => setRoomsInput(e.target.value)} className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl px-4 py-3.5 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[52px]" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider">Bathrooms</label>
+                  <input type="number" min={0} inputMode="numeric" placeholder="1"
+                    value={bathroomsInput} onChange={(e) => setBathroomsInput(e.target.value)} className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl px-4 py-3.5 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[52px]" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider">Floor</label>
+                  <input type="text" placeholder="Bajo, 2º"
+                    value={floorInput} onChange={(e) => setFloorInput(e.target.value)} className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl px-4 py-3.5 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[52px]" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider">Neighbourhood</label>
+                  <input type="text" placeholder="Palacio"
+                    value={neighborhoodInput} onChange={(e) => setNeighborhoodInput(e.target.value)} className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl px-4 py-3.5 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[52px]" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-[11px] font-bold text-zinc-400 uppercase tracking-wider">City</label>
+                  <input type="text" placeholder="Madrid"
+                    value={cityInput} onChange={(e) => setCityInput(e.target.value)} className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl px-4 py-3.5 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[52px]" />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
+                  <Globe className="w-4 h-4 text-zinc-500" />
+                  Link (optional)
+                </label>
+                <input
+                  type="url"
+                  placeholder="https://www.idealista.com/inmueble/12345678/"
+                  value={urlInput} onChange={(e) => setUrlInput(e.target.value)}
+                  className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl px-4 py-3.5 text-[16px] sm:text-base text-zinc-100 placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[52px]"
+                />
+                <p className="text-xs text-zinc-500">Kept so you can reopen the listing. Never fetched.</p>
+              </div>
             </div>
 
-            <div className="w-full flex justify-end pt-4">
+            <div className="w-full flex justify-end pt-2">
               <button
                 type="submit"
-                disabled={createApartmentMutation.isPending}
-                className="w-full sm:w-auto bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white font-bold px-8 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 cursor-pointer text-base sm:text-sm active:scale-[0.98]"
+                className="w-full sm:w-auto bg-blue-500 hover:bg-blue-600 text-white font-bold px-8 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 cursor-pointer text-base sm:text-sm active:scale-[0.98]"
               >
-                {createApartmentMutation.isPending ? (
-                  <>
-                    <Loader2 className="w-5 h-5 sm:w-4 sm:h-4 animate-spin" />
-                    <span>Scraping with Scrapfly...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Next</span>
-                    <ChevronRight className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />
-                  </>
-                )}
+                <span>Next</span>
+                <ChevronRight className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />
               </button>
             </div>
           </form>
@@ -617,10 +760,10 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
               <button
                 type="button"
                 onClick={handleSubmitFinal}
-                disabled={createApartmentMutation.isPending || updateRatingsMutation.isPending}
+                disabled={isSaving}
                 className="flex-1 sm:flex-initial bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-zinc-950 font-extrabold px-8 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] shadow-xl shadow-emerald-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer text-base sm:text-sm active:scale-[0.98] disabled:opacity-50"
               >
-                {createApartmentMutation.isPending || updateRatingsMutation.isPending ? (
+                {isSaving ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
                     <span>Saving...</span>
@@ -645,7 +788,7 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
 
             <span className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-bold uppercase tracking-wider mb-3 border border-emerald-500/20">
               <Sparkles className="w-3.5 h-3.5" />
-              Pipeline Qualified & Calculating
+              Scoring Now
             </span>
 
             <h2 className="text-2xl sm:text-3xl font-extrabold text-zinc-100 tracking-tight mb-3">
@@ -653,7 +796,7 @@ export default function AddListingModal({ isOpen, onClose }: AddListingModalProp
             </h2>
 
             <p className="text-zinc-400 text-sm leading-relaxed mb-8 max-w-sm">
-              Your customized non-negotiable ratings and room scores have been recorded. Our background AI pipeline is scraping photos, extracting features, and running your MCDA math score right now.
+              Your ratings and room scores are saved. The listing is being scored against your criteria now — it will appear on the dashboard in a moment.
             </p>
 
             <button
