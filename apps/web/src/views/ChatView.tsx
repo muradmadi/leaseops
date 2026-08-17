@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'wouter';
 import { useApartment, useMessages, useLogMessage, useAiSuggestMessage, useInitMessages, useUpdateMessage, useDeleteMessage } from '../lib/useApartments';
 import {
@@ -39,6 +39,51 @@ function StatusBadge({ sent }: { sent: boolean }) {
     >
       {sent ? 'Sent' : 'Draft'}
     </span>
+  );
+}
+
+/**
+ * A textarea that is always as tall as what it holds.
+ *
+ * Editing used to drop a long message into a 60px box, which is a worse view of
+ * it than the bubble it replaced. Growing to `scrollHeight` on every change
+ * keeps the text where it was on screen; `minHeight` stops a one-line message
+ * from collapsing to a sliver.
+ */
+function AutoTextarea({
+  value,
+  onChange,
+  className,
+  minHeight = 120,
+  autoFocus,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  className?: string;
+  minHeight?: number;
+  autoFocus?: boolean;
+  placeholder?: string;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  // Layout effect, not effect: measuring after paint makes the box visibly jump.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.max(el.scrollHeight, minHeight)}px`;
+  }, [value, minHeight]);
+
+  return (
+    <textarea
+      ref={ref}
+      value={value}
+      autoFocus={autoFocus}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+      className={`${className} resize-none overflow-hidden`}
+    />
   );
 }
 
@@ -249,12 +294,12 @@ export default function ChatView() {
    */
   const editor = (msg: any, accent: 'blue' | 'emerald') => (
     <div className="flex flex-col gap-2 mt-2">
-      <textarea
-        className={`w-full bg-zinc-950 border rounded-lg p-2 text-[16px] sm:text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none min-h-[60px] ${
+      <AutoTextarea
+        value={editingMessage!.text}
+        onChange={(text) => setEditingMessage({ ...editingMessage!, text })}
+        className={`w-full bg-zinc-950 border rounded-lg p-3 text-[16px] sm:text-sm text-zinc-100 placeholder-zinc-500 leading-relaxed focus:outline-none ${
           accent === 'blue' ? 'border-zinc-800 focus:border-blue-500' : 'border-emerald-500/30 focus:border-emerald-500'
         }`}
-        value={editingMessage!.text}
-        onChange={(e) => setEditingMessage({ ...editingMessage!, text: e.target.value })}
       />
       <label className="flex flex-col gap-1.5">
         <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">When was this sent?</span>
@@ -483,12 +528,13 @@ export default function ChatView() {
                 <div className="flex items-center justify-between gap-4 text-[10px] font-bold text-zinc-400">
                   <span className="text-blue-400 uppercase tracking-wider">Log landlord reply</span>
                 </div>
-                <textarea
+                <AutoTextarea
                   autoFocus
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-[16px] sm:text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 min-h-[80px]"
+                  minHeight={100}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-[16px] sm:text-sm text-zinc-100 placeholder-zinc-500 leading-relaxed focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50"
                   placeholder="Paste what the landlord wrote back..."
                   value={draftMessage.text}
-                  onChange={(e) => setDraftMessage({ ...draftMessage, text: e.target.value })}
+                  onChange={(text) => setDraftMessage({ ...draftMessage, text })}
                 />
                 <label className="flex flex-col gap-1.5">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">When was this sent?</span>
@@ -511,12 +557,13 @@ export default function ChatView() {
                 <div className="flex items-center justify-between gap-4 text-[10px] font-bold text-zinc-400">
                   <span className="text-blue-300 uppercase tracking-wider">Your message</span>
                 </div>
-                <textarea
+                <AutoTextarea
                   autoFocus
-                  className="w-full bg-zinc-950 border border-blue-500/30 rounded-xl p-3 text-[16px] sm:text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 min-h-[80px]"
+                  minHeight={100}
+                  className="w-full bg-zinc-950 border border-blue-500/30 rounded-xl p-3 text-[16px] sm:text-sm text-zinc-100 placeholder-zinc-500 leading-relaxed focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50"
                   placeholder="Write or paste your message..."
                   value={draftMessage.text}
-                  onChange={(e) => setDraftMessage({ ...draftMessage, text: e.target.value })}
+                  onChange={(text) => setDraftMessage({ ...draftMessage, text })}
                 />
                 <label className="flex flex-col gap-1.5">
                   <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">When was this sent?</span>

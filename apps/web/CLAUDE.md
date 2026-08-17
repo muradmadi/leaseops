@@ -115,6 +115,9 @@ container. **Never** `dangerouslySetInnerHTML` — this is untrusted content.
   says "undated" rather than falling back. The composer prefills the current time
   because you can see and change it before saving, which is you stating it; the
   app never writes that field behind you.
+- **A textarea holding an existing message uses `AutoTextarea`.** Editing used to
+  drop a long message into a 60px box — a worse view of it than the bubble it
+  replaced.
 - **`ThreadDigest` is a readout, not a control.** It restates what the messages
   prove — who spoke last, when, whether you owe a reply — beside the
   `StageControl` showing the stage you declared, so a stale stage is visible
