@@ -26,11 +26,96 @@ import {
   useSetApartmentActive,
 } from '../lib/useApartments';
 
+/**
+ * One scored criterion, as `deriveHighlights` reports it.
+ *
+ * `featureScores` is an untyped JSON column, so there is no Drizzle type to
+ * import for its contents — this mirrors `HighlightRow` in the API's `mcda.ts`.
+ */
+interface CriterionRowData {
+  featureId: string;
+  name: string;
+  weight: number;
+  rating: number;
+  pointsEarned: number;
+  pointsForfeited: number;
+  penaltyPoints: number;
+  isValue: boolean;
+}
+
+/** How many rows each column shows before it has to be asked for the rest. */
+const VISIBLE_CRITERIA = 5;
+
+const weightLabel = (weight: number) =>
+  weight >= 5 ? 'Must-have' : weight >= 4 ? 'Important' : 'Minor';
+
+const formatPoints = (points: number) => points.toFixed(1);
+
+/** Derived criteria score on a continuous scale, so 4.2/5 is a real rating. */
+const formatRating = (rating: number) =>
+  Number.isInteger(rating) ? String(rating) : rating.toFixed(1);
+
+/**
+ * A criterion as a cost, not as an equation.
+ *
+ * The old line read "Natural light — you rated it 4/5 against a weight of 5/5",
+ * which states the two inputs and leaves the reader to work out what it did to
+ * the score. The number that matters is the one at the top of the screen, so
+ * every row is denominated in the points it added or lost from it.
+ */
+function CriterionRow({ row, tone }: { row: CriterionRowData; tone: 'strength' | 'shortfall' }) {
+  const isStrength = tone === 'strength';
+  const points = isStrength ? row.pointsEarned : row.pointsForfeited + row.penaltyPoints;
+  const filled = Math.round(row.rating);
+
+  return (
+    <li className="space-y-1.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-sm font-bold text-zinc-100 leading-snug min-w-0 break-words">
+          {row.name}
+        </span>
+        <span
+          className={`text-xs font-black tabular-nums shrink-0 ${
+            isStrength ? 'text-emerald-300' : 'text-amber-300'
+          }`}
+        >
+          {isStrength ? '+' : '−'}
+          {formatPoints(points)} pts
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 flex-1 min-w-0" aria-hidden="true">
+          {[0, 1, 2, 3, 4].map((i) => (
+            <span
+              key={i}
+              className={`h-1.5 flex-1 rounded-full ${
+                i < filled ? (isStrength ? 'bg-emerald-400' : 'bg-amber-400') : 'bg-zinc-800'
+              }`}
+            />
+          ))}
+        </div>
+        <span className="text-[10px] font-bold text-zinc-500 tabular-nums shrink-0">
+          {formatRating(row.rating)}/5 · {weightLabel(row.weight)}
+        </span>
+      </div>
+
+      {row.penaltyPoints > 0 && (
+        <p className="text-[10px] font-bold text-red-300/90 leading-relaxed">
+          {formatPoints(row.pointsForfeited)} missed, plus {formatPoints(row.penaltyPoints)} as a
+          non-negotiable penalty.
+        </p>
+      )}
+    </li>
+  );
+}
+
 export default function ApartmentDetailView() {
   const params = useParams();
   const id = params?.id || '';
   const { data: apartment, isLoading } = useApartment(id);
   const [isEditing, setIsEditing] = useState(false);
+  const [showAllCriteria, setShowAllCriteria] = useState(false);
   const setActiveMutation = useSetApartmentActive();
   const { data: aiReviewData } = useAiReview(id);
   const { mutate: generateReview, isPending: isGeneratingReview } = useGenerateAiReview();
@@ -121,6 +206,32 @@ export default function ApartmentDetailView() {
           // Derived from the score in code, never written by a model, and rewritten
           // every time the score is — so it cannot describe a stale evaluation.
           const highlights = (apartment.featureScores as any)?.highlights || null;
+          const mcdaResult = (apartment.featureScores as any)?.result || null;
+
+          // `rows` was added after the sentence form. Listings scored before that
+          // have `highlights` without it, so the sentences below stay as the
+          // fallback — they retire themselves as those listings are re-scored.
+          const criterionRows: CriterionRowData[] = highlights?.rows || [];
+          const legacyStrengths: string[] = highlights?.strengths || [];
+          const legacyConcerns: string[] = highlights?.concerns || [];
+
+          const strengthRows = criterionRows
+            .filter((row) => row.rating >= 4)
+            .sort((a, b) => b.pointsEarned - a.pointsEarned);
+
+          // Sorted by what each one actually cost, so the most expensive
+          // compromise is the first thing read rather than the first entered.
+          const shortfallRows = criterionRows
+            .filter((row) => row.rating < 4)
+            .sort(
+              (a, b) =>
+                b.pointsForfeited + b.penaltyPoints - (a.pointsForfeited + a.penaltyPoints)
+            );
+
+          const visibleCount = showAllCriteria ? criterionRows.length : VISIBLE_CRITERIA;
+          const hiddenCriteria =
+            Math.max(0, strengthRows.length - VISIBLE_CRITERIA) +
+            Math.max(0, shortfallRows.length - VISIBLE_CRITERIA);
 
           const officialTitle = extJson.title || apartment.title || 'Official Property Listing';
           const rawDescription = extJson.description || (apartment.featureScores as any)?.rawDescription || (apartment as any).rawDescription || 'No detailed description available for this property.';
@@ -346,14 +457,20 @@ export default function ApartmentDetailView() {
                   )}
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2.5 bg-emerald-950/10 border border-emerald-500/20 p-4 rounded-2xl">
+                    <div className="space-y-3 bg-emerald-950/10 border border-emerald-500/20 p-4 rounded-2xl">
                       <h4 className="font-extrabold text-xs text-emerald-400 flex items-center gap-2 uppercase tracking-wider">
                         <ThumbsUp className="w-3.5 h-3.5" />
-                        <span>Strengths</span>
+                        <span>What it earns</span>
                       </h4>
-                      {highlights?.strengths?.length > 0 ? (
+                      {strengthRows.length > 0 ? (
+                        <ul className="space-y-3.5">
+                          {strengthRows.slice(0, visibleCount).map((row) => (
+                            <CriterionRow key={row.featureId} row={row} tone="strength" />
+                          ))}
+                        </ul>
+                      ) : legacyStrengths.length > 0 ? (
                         <ul className="space-y-2">
-                          {highlights.strengths.map((point: string, idx: number) => (
+                          {legacyStrengths.map((point: string, idx: number) => (
                             <li key={idx} className="flex items-start gap-2 text-xs sm:text-sm text-zinc-200 leading-relaxed">
                               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-1.5 shrink-0" />
                               <span>{point}</span>
@@ -365,14 +482,20 @@ export default function ApartmentDetailView() {
                       )}
                     </div>
 
-                    <div className="space-y-2.5 bg-amber-950/10 border border-amber-500/20 p-4 rounded-2xl">
+                    <div className="space-y-3 bg-amber-950/10 border border-amber-500/20 p-4 rounded-2xl">
                       <h4 className="font-extrabold text-xs text-amber-400 flex items-center gap-2 uppercase tracking-wider">
                         <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-                        <span>Shortfalls</span>
+                        <span>What it costs</span>
                       </h4>
-                      {highlights?.concerns?.length > 0 ? (
+                      {shortfallRows.length > 0 ? (
+                        <ul className="space-y-3.5">
+                          {shortfallRows.slice(0, visibleCount).map((row) => (
+                            <CriterionRow key={row.featureId} row={row} tone="shortfall" />
+                          ))}
+                        </ul>
+                      ) : legacyConcerns.length > 0 ? (
                         <ul className="space-y-2">
-                          {highlights.concerns.map((point: string, idx: number) => (
+                          {legacyConcerns.map((point: string, idx: number) => (
                             <li key={idx} className="flex items-start gap-2 text-xs sm:text-sm text-zinc-200 leading-relaxed">
                               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 mt-1.5 shrink-0" />
                               <span>{point}</span>
@@ -384,6 +507,39 @@ export default function ApartmentDetailView() {
                       )}
                     </div>
                   </div>
+
+                  {/* The rows sum to the percentage in the header. Saying so, with
+                      the penalty broken out, is what makes the score checkable
+                      rather than something to be taken on faith. */}
+                  {criterionRows.length > 0 && (
+                    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-1">
+                      <p className="text-[11px] text-zinc-500 leading-relaxed">
+                        {(mcdaResult?.pointsLostToCriticals ?? 0) > 0 ? (
+                          <>
+                            <span className="font-bold text-zinc-400 tabular-nums">
+                              {formatPoints(mcdaResult.baseScore)}%
+                            </span>{' '}
+                            earned across {criterionRows.length} criteria, less{' '}
+                            <span className="font-bold text-red-300/90 tabular-nums">
+                              {formatPoints(mcdaResult.pointsLostToCriticals)}
+                            </span>{' '}
+                            to non-negotiables.
+                          </>
+                        ) : (
+                          <>Earned across {criterionRows.length} scored criteria.</>
+                        )}
+                      </p>
+                      {hiddenCriteria > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setShowAllCriteria((shown) => !shown)}
+                          className="min-h-[44px] px-3 -my-2 text-[11px] font-bold text-blue-400 hover:text-blue-300 transition-colors cursor-pointer"
+                        >
+                          {showAllCriteria ? 'Show fewer' : `Show all ${criterionRows.length}`}
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* ---- READ: the only part a model produced ---- */}

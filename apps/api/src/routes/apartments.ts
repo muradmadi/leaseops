@@ -30,25 +30,9 @@ import {
   removeMessage,
 } from '@leaseops/db';
 import { processListingAsync, buildListingFromInput, DEFAULT_TITLE } from '../services/scraper';
-import {
-  calculateMcdaScore,
-  deriveHighlights,
-  DEFAULT_QUALIFYING_THRESHOLD,
-  type FeatureEvaluation,
-} from '../services/mcda';
-import {
-  buildFeatureEvaluations,
-  buildSpaceEvaluations,
-  buildRoomQualityEvaluation,
-  featureDisplayName,
-} from '../services/features';
+import { rescoreApartment } from '../services/rescore';
 import { enrichQualifiedLead, resolveHouseholdPersona } from '../services/qualification';
-import {
-  analyseListing,
-  draftOutreachMessage,
-  suggestChatReply,
-  generateCompromiseSummary,
-} from '../services/llm';
+import { analyseListing, draftOutreachMessage, suggestChatReply } from '../services/llm';
 import { resolveLlmConfig } from '../services/anthropic';
 import { globalEvents } from '../services/events';
 import { z } from 'zod';
@@ -115,6 +99,75 @@ app.get(
  */
 app.get('/archived', async (c) => {
   return c.json(await listArchivedApartments(c.get('householdId')), 200);
+});
+
+/**
+ * POST /api/apartments/rescore
+ *
+ * Re-runs the score on every listing this household owns, against the criteria
+ * and the scoring code as they are now. Registered above `/:id` so it is not
+ * captured as an id.
+ *
+ * **It re-computes and writes nothing else.** Each listing keeps its ratings,
+ * its figures, its AI review, its outreach thread, and all four axes — only
+ * `mcdaScore`, `status` and `featureScores` are written, because those are the
+ * only things the arithmetic produces. It therefore has no effect at all on a
+ * household whose criteria have not changed, which is what makes it safe to
+ * press twice.
+ *
+ * **It spends nothing.** Scoring is arithmetic and the compromise summary is
+ * derived, so this is free at any number of listings. It deliberately does *not*
+ * call `enrichQualifiedLead` on listings it promotes, which is the one place a
+ * bulk operation could quietly become an LLM bill of two calls per listing.
+ * Promotion still sets the bucket; releasing the spend stays a per-listing
+ * decision made with Activate, exactly as it is for a listing that fell short.
+ */
+app.post('/rescore', async (c) => {
+  const householdId = c.get('householdId');
+  const userProfile = await findProfileByHouseholdId(householdId);
+
+  // The archive is included: `archivedAt` is an independent axis, and a listing
+  // restored later should not come back carrying a score from older criteria.
+  const [live, archived] = await Promise.all([
+    listApartments(householdId),
+    listArchivedApartments(householdId),
+  ]);
+  const all = [...live, ...archived];
+
+  let scoreChanged = 0;
+  let statusChanged = 0;
+  const failed: string[] = [];
+
+  // Sequential on purpose. This is microseconds of arithmetic per listing against
+  // one SQLite file, so there is nothing to win by racing the writes.
+  for (const apartment of all) {
+    try {
+      const { result, update } = await rescoreApartment(apartment, userProfile);
+      await updateApartmentRatings(apartment.id, update);
+
+      if (result.totalScore !== apartment.mcdaScore) scoreChanged++;
+      if (result.status !== apartment.status) statusChanged++;
+    } catch (err: any) {
+      // One bad record must not abandon the rest half-scored.
+      console.error(`[Rescore] Failed for ${apartment.id}: ${err.message}`);
+      failed.push(apartment.id);
+    }
+  }
+
+  // One event for the batch. The SSE listener ignores the payload and invalidates
+  // the whole list, so emitting per listing would be N identical refetches.
+  globalEvents.emit('apartmentUpdated', { id: null, bulk: true });
+
+  return c.json(
+    {
+      rescored: all.length - failed.length,
+      archived: archived.length,
+      scoreChanged,
+      statusChanged,
+      failed: failed.length,
+    },
+    200
+  );
 });
 
 /**
@@ -420,111 +473,12 @@ app.patch(
 
     const userProfile = await findProfileByHouseholdId(c.get('householdId'));
 
-    const oldScores = (existing.featureScores || {}) as any;
-    let evaluations = (oldScores.evaluations || []) as FeatureEvaluation[];
-
-    // No evaluation set yet (ingestion failed, or this predates scoring) — build one
-    // from the same catalogue the scraper uses so both paths score identically.
-    if (evaluations.length === 0) {
-      evaluations = buildFeatureEvaluations({
-        featureWeights: userProfile?.featureWeights as Record<string, unknown> | undefined,
-        featureRatings,
-      });
-    }
-
-    // Apply the new ratings. A rating for a feature that was never in the
-    // evaluation set used to be dropped on the floor by this map — you could rate
-    // three things after a viewing, see no error, and have two silently ignored
-    // because they had been weighted below the scoring threshold. Rating something
-    // explicitly is itself a statement that it matters, so it now joins the set.
-    const updatedEvaluations: FeatureEvaluation[] = evaluations.map((evalItem) => {
-      if (featureRatings && featureRatings[evalItem.featureId] !== undefined) {
-        return {
-          ...evalItem,
-          rating: Number(featureRatings[evalItem.featureId]),
-          notes: `Updated to ${Number(featureRatings[evalItem.featureId])}/5 post-viewing.`,
-        };
-      }
-      return evalItem;
+    const { result: newResult, update } = await rescoreApartment(existing, userProfile, {
+      featureRatings,
+      roomScores: roomScores as Record<string, number> | undefined,
     });
 
-    // Derived criteria are recomputed rather than carried over: the room scores may
-    // have just changed, and stale size ratings would contradict the listing.
-    const derivedIds = new Set(['__floorArea', '__bedrooms', '__bathrooms', '__roomQuality']);
-    for (let i = updatedEvaluations.length - 1; i >= 0; i--) {
-      if (derivedIds.has(updatedEvaluations[i]!.featureId)) updatedEvaluations.splice(i, 1);
-    }
-    updatedEvaluations.push(
-      ...buildSpaceEvaluations(userProfile?.spaceRequirements as any, (existing.extractedData as any)?.unitMetrics)
-    );
-    const newRoomQuality = buildRoomQualityEvaluation(
-      (roomScores as Record<string, number>) || (existing.roomScores as Record<string, number>)
-    );
-    if (newRoomQuality) updatedEvaluations.push(newRoomQuality);
-
-    if (featureRatings) {
-      const weights = (userProfile?.featureWeights || {}) as Record<string, unknown>;
-      for (const [featureId, rawRating] of Object.entries(featureRatings)) {
-        if (updatedEvaluations.some((e) => e.featureId === featureId)) continue;
-        const rating = Number(rawRating);
-        if (!Number.isFinite(rating)) continue;
-
-        const rawWeight = weights[featureId];
-        const weight = rawWeight === undefined || rawWeight === null ? 3 : Number(rawWeight);
-        if (!Number.isFinite(weight)) continue;
-
-        updatedEvaluations.push({
-          featureId,
-          name: featureDisplayName(featureId),
-          weight,
-          rating: Math.max(0, Math.min(5, rating)),
-          notes: `Rated ${rating}/5 post-viewing.`,
-        });
-      }
-    }
-
-    const profile = {
-      qualifyingThreshold: userProfile?.qualifyingThreshold ?? DEFAULT_QUALIFYING_THRESHOLD,
-      budgetCeiling: userProfile?.maxRent || 1500,
-      idealRent: userProfile?.idealRent,
-    };
-
-    const newResult = calculateMcdaScore(updatedEvaluations, existing.price, profile);
-
-    // Keep the compromise summary in step with the score the user just changed.
-    const ext = (existing.extractedData || {}) as any;
-    let compromise = oldScores.compromise;
-    if (newResult.status === 'QUALIFIED') {
-      compromise = undefined;
-    } else {
-      try {
-        compromise = await generateCompromiseSummary(
-          existing.title || ext.title || 'This property',
-          existing.price,
-          ext.description || '',
-          { evaluations: updatedEvaluations, result: newResult, budgetCeiling: profile.budgetCeiling }
-        );
-      } catch (err: any) {
-        console.warn(`[Ratings] Compromise summary regeneration failed for ${id}: ${err.message}`);
-      }
-    }
-
-    const updated = await updateApartmentRatings(id, {
-      mcdaScore: newResult.totalScore,
-      status: newResult.status,
-      featureScores: {
-        ...oldScores,
-        evaluations: updatedEvaluations,
-        result: newResult,
-        highlights: deriveHighlights(updatedEvaluations, newResult, {
-          price: existing.price,
-          budgetCeiling: profile.budgetCeiling,
-          idealRent: profile.idealRent,
-        }),
-        compromise,
-      },
-      roomScores: roomScores || existing.roomScores || undefined,
-    });
+    const updated = await updateApartmentRatings(id, update);
 
     // Re-rating can promote a listing to a qualified lead. Enrich it in the
     // background so the response stays fast; the UI picks the result up over SSE.

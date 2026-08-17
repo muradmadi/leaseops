@@ -23,6 +23,8 @@ import {
   Trash2,
   KeyRound,
   Download,
+  Calculator,
+  Loader2,
 } from 'lucide-react';
 import { useAuth, useLogout } from '../lib/useAuth';
 import {
@@ -41,6 +43,7 @@ import {
   useArchivedApartments,
   useRestoreApartment,
   usePermanentlyDeleteApartment,
+  useRescoreAll,
 } from '../lib/useApartments';
 
 /** How many models the picker shows before the "show all" toggle. */
@@ -66,6 +69,7 @@ export default function SettingsView() {
   const { data: archived = [], isLoading: archiveLoading } = useArchivedApartments();
   const restoreMutation = useRestoreApartment();
   const purgeMutation = usePermanentlyDeleteApartment();
+  const rescoreAll = useRescoreAll();
   const [confirmPurgeId, setConfirmPurgeId] = useState<string | null>(null);
 
   const [copied, setCopied] = useState(false);
@@ -827,6 +831,67 @@ export default function SettingsView() {
                 </div>
               </button>
             </Link>
+
+            {/* Sits under the wizard because changing your criteria is exactly
+                when the stored scores stop matching them. */}
+            <div className="border-t border-zinc-800/80">
+              <button
+                onClick={() => rescoreAll.mutate()}
+                disabled={rescoreAll.isPending}
+                className="w-full p-4 sm:p-5 flex items-center justify-between gap-3 hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800 disabled:opacity-60 disabled:cursor-wait"
+              >
+                <div className="flex items-center gap-3.5 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center border border-blue-500/20 shrink-0">
+                    {rescoreAll.isPending ? (
+                      <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+                    ) : (
+                      <Calculator className="w-5 h-5 text-blue-400" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
+                      {rescoreAll.isPending ? 'Re-scoring…' : 'Re-score every listing'}
+                    </p>
+                    <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
+                      Runs the maths again on what you already entered. Costs nothing and
+                      changes nothing else — your ratings, notes, threads and pipeline
+                      stages are untouched.
+                    </p>
+                  </div>
+                </div>
+              </button>
+
+              {/* Reported rather than assumed: the useful answer is how many
+                  actually moved, and "none" is a real and common result. */}
+              {rescoreAll.isSuccess && !rescoreAll.isPending && (
+                <div className="px-4 sm:px-5 pb-4 sm:pb-5 -mt-1">
+                  <p className="text-xs text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2.5 leading-relaxed">
+                    Re-scored {rescoreAll.data.rescored}{' '}
+                    {rescoreAll.data.rescored === 1 ? 'listing' : 'listings'}
+                    {rescoreAll.data.archived > 0 && `, ${rescoreAll.data.archived} of them archived`}
+                    .{' '}
+                    {rescoreAll.data.scoreChanged === 0
+                      ? 'No score changed — they already matched your current criteria.'
+                      : `${rescoreAll.data.scoreChanged} ${
+                          rescoreAll.data.scoreChanged === 1 ? 'score' : 'scores'
+                        } changed${
+                          rescoreAll.data.statusChanged > 0
+                            ? `, and ${rescoreAll.data.statusChanged} moved between qualified and fell-short.`
+                            : '.'
+                        }`}
+                    {rescoreAll.data.failed > 0 && ` ${rescoreAll.data.failed} could not be scored.`}
+                  </p>
+                </div>
+              )}
+
+              {rescoreAll.isError && (
+                <div className="px-4 sm:px-5 pb-4 sm:pb-5 -mt-1">
+                  <p className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2.5 leading-relaxed">
+                    {(rescoreAll.error as Error).message}
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         </section>
 

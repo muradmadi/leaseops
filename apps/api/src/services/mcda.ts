@@ -235,10 +235,71 @@ export function calculateMcdaScore(
  * embellish, and leaves the LLM call to do the one thing it is actually better at:
  * reading the listing text.
  */
+/**
+ * The id given to rent when it is reported as a criterion in its own right.
+ *
+ * It is not in the feature catalogue — `calculateMcdaScore` folds it into the
+ * weighted mean directly — but it carries `VALUE_WEIGHT`, so a row set that
+ * omitted it would not add up to the score it claims to explain. The `__` prefix
+ * matches the other derived criteria and cannot collide with a catalogue id.
+ */
+export const VALUE_FEATURE_ID = '__valueForMoney';
+
+/**
+ * One criterion's share of the score, in the same points as the percentage in
+ * the header.
+ *
+ * `rating` and `weight` are the two numbers the user supplied, and stating them
+ * back — "4/5 against a weight of 5/5" — leaves them to do the arithmetic that
+ * produced the score. What they want to know is what a shortfall actually
+ * *cost*, so every row carries its own contribution instead:
+ *
+ *   Σ pointsEarned     = baseScore
+ *   Σ pointsForfeited   = 100 - baseScore
+ *   Σ penaltyPoints     = baseScore - totalScore
+ *
+ * Which makes the card reconcilable against the number at the top of the screen
+ * rather than something to be taken on faith — the same reason
+ * `McdaScoreResult` keeps `baseScore` and `criticalShortfalls` around.
+ */
+export interface HighlightRow {
+  featureId: string;
+  name: string;
+  weight: number;
+  rating: number;
+  /** Points this criterion put on the board. */
+  pointsEarned: number;
+  /** Points it left there — what a perfect 5/5 would have added instead. */
+  pointsForfeited: number;
+  /** Points removed by the non-negotiable penalty. 0 for all but a shortfall. */
+  penaltyPoints: number;
+  /** Rent, which is scored like a feature but exempt from the penalty. */
+  isValue: boolean;
+}
+
+/**
+ * The plain-language reading of a score.
+ *
+ * Derived here, in code, because it is pure restatement of the arithmetic — the
+ * model used to be asked for this and its only possible contribution was
+ * rewording. Keeping it local makes it free, deterministic, and impossible to
+ * embellish, and leaves the LLM call to do the one thing it is actually better at:
+ * reading the listing text.
+ */
 export interface ScoreHighlights {
   verdict: string;
   strengths: string[];
   concerns: string[];
+  /**
+   * The per-criterion accounting behind `strengths` and `concerns`.
+   *
+   * Added after the sentence form, and the sentences stay: listings scored
+   * before this existed have `highlights` without `rows`, and re-scoring every
+   * historical row to backfill a presentation detail is not worth a migration.
+   * The UI renders rows when they are there and the sentences when they are not,
+   * so the fallback retires itself as listings are edited.
+   */
+  rows: HighlightRow[];
 }
 
 export function deriveHighlights(
@@ -275,6 +336,45 @@ export function deriveHighlights(
     }
   }
 
+  // The same denominator `calculateMcdaScore` divided by, rebuilt here so each
+  // row is a real share of the published score rather than a second, prettier
+  // scale that happens to look similar.
+  const denominator =
+    features.reduce((sum, f) => sum + 5 * f.weight, 0) +
+    (result.valueRating !== null ? 5 * VALUE_WEIGHT : 0);
+
+  const penaltyByFeature = new Map(
+    result.criticalShortfalls.map((s) => [s.featureId, s.pointsLost] as const)
+  );
+
+  const toRow = (
+    featureId: string,
+    name: string,
+    weight: number,
+    rating: number,
+    isValue: boolean
+  ): HighlightRow => ({
+    featureId,
+    name,
+    weight,
+    rating: round2(rating),
+    pointsEarned: denominator > 0 ? round2(((rating * weight) / denominator) * 100) : 0,
+    pointsForfeited: denominator > 0 ? round2((((5 - rating) * weight) / denominator) * 100) : 0,
+    penaltyPoints: penaltyByFeature.get(featureId) ?? 0,
+    isValue,
+  });
+
+  const rows = features.map((f) => toRow(f.featureId, f.name, f.weight, f.rating, false));
+
+  // Rent is a scored criterion, so leaving it out would make the rows sum to
+  // less than the score they explain. Named for what it measures — distance from
+  // the rent you said you wanted, not the rent itself.
+  if (result.valueRating !== null) {
+    rows.push(
+      toRow(VALUE_FEATURE_ID, 'Rent against your ideal', VALUE_WEIGHT, result.valueRating, true)
+    );
+  }
+
   const parts = [`Scores ${result.totalScore}% against your criteria`];
   if (result.pointsLostToCriticals > 0) {
     parts.push(`after losing ${result.pointsLostToCriticals} points to non-negotiables`);
@@ -287,5 +387,5 @@ export function deriveHighlights(
     }
   }
 
-  return { verdict: `${parts.join(' ')}.`, strengths, concerns };
+  return { verdict: `${parts.join(' ')}.`, strengths, concerns, rows };
 }

@@ -11,6 +11,7 @@ src/routes/           One router per domain: apartments, auth, profiles, health
 src/services/
   scraper.ts          Enrichment pipeline: score, route, enrich
   mcda.ts             Pure scoring engine (no I/O — keep it that way)
+  rescore.ts          Re-runs the score from stored inputs (no I/O, no model)
   features.ts         Canonical feature catalogue + evaluation builder
   llm.ts              LLM calls: analysis, outreach, chat reply (compromise is free)
   qualification.ts    Post-qualification chain + persona resolution
@@ -143,6 +144,34 @@ mail client. `WON`/`LOST` are stored separately rather than as a flag on a singl
 Only features weighted ≥4 are scored, plus any the user rated explicitly. An
 unrated feature counts **3/5 — unknown, not passing**. It was 4, which made an
 unassessed listing score 80% and qualify.
+
+### Re-scoring
+
+`services/rescore.ts` recomputes one listing from inputs already on the record.
+It does no I/O, calls no model, and returns the update rather than writing it, so
+the caller decides what follows. Two callers share it and **must keep sharing
+it**: `PATCH /:id/ratings` (one listing, post-viewing) and `POST /rescore` (the
+whole household, from Settings). The logic lived inline in the ratings handler,
+and adding the second caller by copying it would have left two scoring paths free
+to drift.
+
+`POST /rescore` is registered **before `/:id`** or it is captured as an id. Rules
+for it:
+
+- **It writes `mcdaScore`, `status` and `featureScores`, and nothing else.**
+  `isActive`, `pipelineStage`, `setAsideReason`, `archivedAt` and `extractedData`
+  are not the arithmetic's to touch — the four axes and the AI review record what
+  the *user* did. `apartments.test.ts` asserts each one individually, because a
+  bulk write is the kind of thing found to have been destructive a week later.
+- **It must never enrich.** The single-listing path fires `enrichQualifiedLead`
+  when a listing is promoted; doing that in a loop is how a free button becomes
+  two LLM calls per listing. Promotion sets the bucket and the spend stays a
+  per-listing decision made with Activate. Do not "fix" this by adding
+  enrichment.
+- The archive is included on purpose: `archivedAt` is an independent axis, and a
+  listing restored later should not carry a score from older criteria.
+- One SSE event for the batch, not one per listing — the listener ignores the
+  payload and invalidates the whole list either way.
 
 ### Derived criteria
 
@@ -349,6 +378,7 @@ repeated themselves, ended three different ways, and contradicted the persona.
 | You press Activate | 2 — the same pair, released on demand |
 | You ask for a chat reply | 1 — **0** with no household key; it reports offline |
 | You edit a listing | **0** — re-scoring is arithmetic; the review is carried over |
+| You press Re-score every listing | **0** at any number of listings — see below |
 
 `generateCompromiseSummary` **must not call a model**. It used to, on every
 rejected listing, to reword a sentence already assembled in code — the majority of
@@ -363,6 +393,18 @@ listing description. It takes `(credentials, description)` and returns
   free and stores them at `featureScores.highlights`. A model asked to reword
   arithmetic costs a call, can only embellish, and made the prompt do five jobs
   badly instead of one well.
+- **`highlights.rows` must reconcile against the score it explains.** Each row is
+  one criterion denominated in score points, and three identities hold:
+  `Σ pointsEarned = baseScore`, `Σ pointsForfeited = 100 - baseScore`, and
+  `Σ penaltyPoints = pointsLostToCriticals`. That is why rent is emitted as a row
+  (`VALUE_FEATURE_ID`) whenever `valueRating` is non-null — it carries
+  `VALUE_WEIGHT` in the mean, so omitting it would leave the rows summing to less
+  than the percentage printed above them. `mcda.test.ts` asserts all three; a card
+  whose numbers do not add up is the fabrication rule by another route.
+- **`rows` is additive, and the sentence forms stay.** Listings scored before it
+  existed have `highlights` without `rows`, and the UI falls back to `strengths`
+  and `concerns` for them rather than a backfill migration. Do not delete the
+  sentences until those rows have all been re-scored.
 - `flags` are conditions stated in the text that a feature matrix cannot represent
   — minimum stay, aval, agency fees, no empadronamiento. This is the whole reason
   the call exists.

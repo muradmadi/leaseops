@@ -452,3 +452,30 @@ export function useDeleteMessage() {
   });
 }
 
+
+export interface RescoreSummary {
+  rescored: number;
+  archived: number;
+  scoreChanged: number;
+  statusChanged: number;
+  failed: number;
+}
+
+/**
+ * Re-runs the score on every listing in the household against the current
+ * criteria.
+ *
+ * Invalidates the individual listing queries as well as the list: a detail view
+ * left open in another tab is showing a score this may have just changed.
+ */
+export function useRescoreAll() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async () =>
+      apiFetch<RescoreSummary>('/apartments/rescore', { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
+    },
+  });
+}

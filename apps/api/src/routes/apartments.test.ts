@@ -833,3 +833,171 @@ describe('Conversation', () => {
     expect(res.status).toBe(400);
   });
 });
+
+/**
+ * The whole point of this endpoint is what it *does not* touch. A bulk write
+ * across every listing a household owns is the kind of thing that is discovered
+ * to have been destructive a week later, so the axes it must leave alone are
+ * asserted individually rather than trusted.
+ */
+describe('Bulk re-score', () => {
+  /** Creates a listing and waits for the pipeline to land a score on it. */
+  async function scored(account: TestAccount, title: string, price: number) {
+    const created: any = await (
+      await app.fetch(
+        new Request('http://localhost/api/apartments', {
+          method: 'POST',
+          headers: authHeaders(account),
+          body: JSON.stringify({ title, price, description: 'A flat.' }),
+        })
+      )
+    ).json();
+
+    for (let i = 0; i < 40; i++) {
+      const current: any = await (
+        await app.fetch(
+          new Request(`http://localhost/api/apartments/${created.id}`, {
+            headers: authHeaders(account),
+          })
+        )
+      ).json();
+      if (current.mcdaScore !== null && current.status !== 'UNPROCESSED') return current;
+      await Bun.sleep(25);
+    }
+    throw new Error('Listing never finished scoring');
+  }
+
+  const rescore = (account: TestAccount) =>
+    app.fetch(
+      new Request('http://localhost/api/apartments/rescore', {
+        method: 'POST',
+        headers: authHeaders(account),
+      })
+    );
+
+  const fetchOne = async (account: TestAccount, id: string) =>
+    (await (
+      await app.fetch(
+        new Request(`http://localhost/api/apartments/${id}`, { headers: authHeaders(account) })
+      )
+    ).json()) as any;
+
+  it('re-scores every listing and reports what moved', async () => {
+    const account = await createTestAccount('rescore');
+    try {
+      await scored(account, 'Rescore A', 700);
+      await scored(account, 'Rescore B', 900);
+
+      const res = await rescore(account);
+      expect(res.status).toBe(200);
+
+      const summary: any = await res.json();
+      expect(summary.rescored).toBe(2);
+      expect(summary.failed).toBe(0);
+      // Nothing about the criteria changed between scoring and re-scoring, so
+      // the arithmetic must land in exactly the same place.
+      expect(summary.scoreChanged).toBe(0);
+      expect(summary.statusChanged).toBe(0);
+    } finally {
+      await account.cleanup();
+    }
+  });
+
+  it('leaves every axis except the score untouched', async () => {
+    const account = await createTestAccount('rescore-axes');
+    try {
+      const created: any = await scored(account, 'Rescore axes', 700);
+
+      // Put the listing in a state a re-score could plausibly trample: chased by
+      // hand, part-way through a conversation, and overruled with a reason.
+      await app.fetch(
+        new Request(`http://localhost/api/apartments/${created.id}/stage`, {
+          method: 'PATCH',
+          headers: authHeaders(account),
+          body: JSON.stringify({ pipelineStage: 'IN_CONVERSATION' }),
+        })
+      );
+      await app.fetch(
+        new Request(`http://localhost/api/apartments/${created.id}/set-aside`, {
+          method: 'PATCH',
+          headers: authHeaders(account),
+          body: JSON.stringify({ reason: 'Stairwell smelled of damp' }),
+        })
+      );
+
+      const before = await fetchOne(account, created.id);
+      expect((await rescore(account)).status).toBe(200);
+      const after = await fetchOne(account, created.id);
+
+      expect(after.pipelineStage).toBe('IN_CONVERSATION');
+      expect(after.setAsideReason).toBe('Stairwell smelled of damp');
+      expect(after.isActive).toBe(before.isActive);
+      expect(after.archivedAt).toBe(before.archivedAt);
+      // The AI review lives in extractedData and is not the score's to rewrite.
+      expect(after.extractedData).toEqual(before.extractedData);
+      expect(after.price).toBe(before.price);
+      expect(after.title).toBe(before.title);
+    } finally {
+      await account.cleanup();
+    }
+  });
+
+  it('is idempotent — pressing it twice changes nothing', async () => {
+    const account = await createTestAccount('rescore-twice');
+    try {
+      const created: any = await scored(account, 'Rescore twice', 800);
+
+      await rescore(account);
+      const once = await fetchOne(account, created.id);
+
+      const second: any = await (await rescore(account)).json();
+      const twice = await fetchOne(account, created.id);
+
+      expect(second.scoreChanged).toBe(0);
+      expect(second.statusChanged).toBe(0);
+      expect(twice.mcdaScore).toBe(once.mcdaScore);
+      expect(twice.status).toBe(once.status);
+      expect(twice.featureScores).toEqual(once.featureScores);
+    } finally {
+      await account.cleanup();
+    }
+  });
+
+  it('backfills the per-criterion rows onto a listing scored before they existed', async () => {
+    const account = await createTestAccount('rescore-rows');
+    try {
+      const created: any = await scored(account, 'Rescore rows', 750);
+
+      // A test household has no weighted criteria, so rate a few features
+      // explicitly — rating something is itself a statement that it matters, and
+      // it is what puts entries in the evaluation set here.
+      await app.fetch(
+        new Request(`http://localhost/api/apartments/${created.id}/ratings`, {
+          method: 'PATCH',
+          headers: authHeaders(account),
+          body: JSON.stringify({ featureRatings: { naturalLight: 5, dishwasher: 2 } }),
+        })
+      );
+
+      expect((await rescore(account)).status).toBe(200);
+
+      const after = await fetchOne(account, created.id);
+      const rows = after.featureScores.highlights.rows;
+      expect(Array.isArray(rows)).toBe(true);
+      expect(rows.length).toBeGreaterThan(0);
+
+      // The identity that makes the card trustworthy, checked end to end.
+      const earned = rows.reduce((sum: number, r: any) => sum + r.pointsEarned, 0);
+      expect(earned).toBeCloseTo(after.featureScores.result.baseScore, 1);
+    } finally {
+      await account.cleanup();
+    }
+  });
+
+  it('refuses an unauthenticated caller', async () => {
+    const res = await app.fetch(
+      new Request('http://localhost/api/apartments/rescore', { method: 'POST' })
+    );
+    expect(res.status).toBe(401);
+  });
+});

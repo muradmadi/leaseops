@@ -148,9 +148,19 @@ export default function ChatView() {
     }
   };
 
-  const timeOf = (value: string | number | Date) =>
-    new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
+  /*
+   * There is deliberately no timestamp on a message.
+   *
+   * `createdAt` is when the row was written, which is not when anything was
+   * said: you send a message from your own mail client and mark it sent here a
+   * day later, and the bubble would claim you wrote it just now. It was rendered
+   * as a bare clock time too, so a thread spanning a week showed five times and
+   * no dates. A wrong fact on screen is worse than a blank space.
+   *
+   * Restoring it means a `sentAt` the user can set, separate from `createdAt`
+   * for the same reason `isActive` is separate from `status` — when something
+   * happened is a fact about the conversation, not about the record.
+   */
   const editor = (msg: any, accent: 'blue' | 'emerald') => (
     <div className="flex flex-col gap-2 mt-2">
       <textarea
@@ -246,7 +256,6 @@ export default function ChatView() {
                   <div className="flex items-center justify-between gap-4 text-[10px] font-bold text-zinc-400">
                     <span className="text-blue-400 uppercase tracking-wider">Landlord</span>
                     <div className="flex items-center gap-2">
-                      <span>{timeOf(msg.createdAt)}</span>
                       <button title="Edit" onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="hover:text-zinc-200"><Pencil className="w-3 h-3" /></button>
                       <button title="Delete" onClick={() => deleteMessageMutation.mutate({ id, messageId: msg.id })} className="hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
                     </div>
@@ -269,7 +278,6 @@ export default function ChatView() {
                     <span className="text-blue-300 uppercase tracking-wider">You</span>
                     <div className="flex items-center gap-2">
                       <StatusBadge sent={sent} />
-                      <span>{timeOf(msg.createdAt)}</span>
                       <button title="Edit" onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="hover:text-zinc-200"><Pencil className="w-3 h-3" /></button>
                       <button title="Delete" onClick={() => deleteMessageMutation.mutate({ id, messageId: msg.id })} className="hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
                     </div>
@@ -310,7 +318,6 @@ export default function ChatView() {
                   </span>
                   <div className="flex items-center gap-2">
                     <StatusBadge sent={isSent} />
-                    <span className="text-[10px] font-bold text-zinc-400">{timeOf(msg.createdAt)}</span>
                     <button title="Edit" onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="text-emerald-400 hover:text-emerald-300"><Pencil className="w-3 h-3" /></button>
                   </div>
                 </div>

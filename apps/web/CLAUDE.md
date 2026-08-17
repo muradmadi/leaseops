@@ -104,6 +104,13 @@ container. **Never** `dangerouslySetInnerHTML` — this is untrusted content.
   is what lets the API stop inferring anything. Your own messages carry the same
   Sent/Draft toggle and can be saved either way from the composer. Landlord
   messages have no such state — they were sent, by them, or they would not exist.
+- **Messages carry no timestamp, deliberately.** `createdAt` is when the row was
+  written, not when anything was said — you send from your own mail client and
+  press *Mark sent* a day later. It was also rendered as a bare clock time, so a
+  thread spanning a week showed five times and no dates at all. Restoring it means
+  a user-settable `sentAt`, separate from `createdAt` for the same reason
+  `isActive` is separate from `status`: when something happened is a fact about
+  the conversation, not about the record. Do not re-add `createdAt` to a bubble.
 - **There is no translation in this app.** The landlord bubble used to be badged
   `(Auto-detected → English)` from metadata hardcoded at save time, with no
   detection and no translation anywhere in the repo — and pointed at English

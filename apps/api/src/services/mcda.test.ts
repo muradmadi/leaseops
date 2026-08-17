@@ -5,6 +5,7 @@ import {
   rateValueForMoney,
   MAX_PENALTY_PER_CRITICAL,
   CRITICAL_FLOOR,
+  VALUE_FEATURE_ID,
 } from './mcda';
 import type { FeatureEvaluation, ScoringProfile } from './mcda';
 
@@ -253,5 +254,88 @@ describe('Derived highlights', () => {
     const highlights = deriveHighlights(features, result, { price: 1000, budgetCeiling: 1500 });
     expect(highlights.strengths).toEqual([]);
     expect(highlights.concerns).toEqual([]);
+  });
+
+  /**
+   * The rows are only worth showing if they add up to the score printed beside
+   * them. These three identities are the whole contract — break one and the card
+   * is explaining a number the engine did not produce.
+   */
+  describe('per-criterion rows reconcile against the score', () => {
+    const sum = (ns: number[]) => ns.reduce((a, b) => a + b, 0);
+
+    it('accounts for every point between 100 and the final score', () => {
+      const features: FeatureEvaluation[] = [
+        { featureId: 'a', name: 'Natural Light', weight: 5, rating: 5 },
+        { featureId: 'b', name: 'Heating Quality', weight: 5, rating: 1 },
+        { featureId: 'c', name: 'Dishwasher', weight: 4, rating: 2 },
+        { featureId: 'd', name: 'Balcony', weight: 2, rating: 3 },
+      ];
+      const result = calculateMcdaScore(features, 1300, profile);
+      const { rows } = deriveHighlights(features, result, {
+        price: 1300,
+        budgetCeiling: profile.budgetCeiling,
+        idealRent: profile.idealRent,
+      });
+
+      expect(sum(rows.map((r) => r.pointsEarned))).toBeCloseTo(result.baseScore, 1);
+      expect(sum(rows.map((r) => r.pointsForfeited))).toBeCloseTo(100 - result.baseScore, 1);
+      expect(sum(rows.map((r) => r.penaltyPoints))).toBeCloseTo(
+        result.pointsLostToCriticals,
+        1
+      );
+    });
+
+    it('includes rent as a criterion, since the score does', () => {
+      const features: FeatureEvaluation[] = [
+        { featureId: 'a', name: 'Light', weight: 5, rating: 5 },
+      ];
+      const result = calculateMcdaScore(features, 1350, profile);
+      const { rows } = deriveHighlights(features, result, {
+        price: 1350,
+        budgetCeiling: profile.budgetCeiling,
+        idealRent: profile.idealRent,
+      });
+
+      const value = rows.find((r) => r.featureId === VALUE_FEATURE_ID);
+      expect(value?.isValue).toBe(true);
+      expect(result.valueRating).not.toBeNull();
+      expect(value?.rating).toBe(result.valueRating as number);
+      // Rent is exempt from the non-negotiable penalty even rated below the
+      // floor — the budget ceiling is already price's hard gate.
+      expect(value?.penaltyPoints).toBe(0);
+      expect(sum(rows.map((r) => r.pointsEarned))).toBeCloseTo(result.baseScore, 1);
+    });
+
+    it('omits rent entirely when no ideal is set, rather than inventing a target', () => {
+      const features: FeatureEvaluation[] = [
+        { featureId: 'a', name: 'Light', weight: 5, rating: 4 },
+      ];
+      const noIdeal: ScoringProfile = { qualifyingThreshold: 70, budgetCeiling: 1500 };
+      const result = calculateMcdaScore(features, 1200, noIdeal);
+      const { rows } = deriveHighlights(features, result, { price: 1200, budgetCeiling: 1500 });
+
+      expect(rows.some((r) => r.isValue)).toBe(false);
+      expect(rows).toHaveLength(1);
+      expect(sum(rows.map((r) => r.pointsEarned))).toBeCloseTo(result.baseScore, 1);
+    });
+
+    it('attributes the penalty to the feature that caused it', () => {
+      const features: FeatureEvaluation[] = [
+        { featureId: 'a', name: 'Light', weight: 5, rating: 5 },
+        { featureId: 'b', name: 'Lift', weight: 5, rating: 0 },
+      ];
+      const result = calculateMcdaScore(features, 1200, profile);
+      const { rows } = deriveHighlights(features, result, {
+        price: 1200,
+        budgetCeiling: profile.budgetCeiling,
+        idealRent: profile.idealRent,
+      });
+
+      const lift = rows.find((r) => r.featureId === 'b');
+      expect(lift?.penaltyPoints).toBeGreaterThan(0);
+      expect(lift?.pointsEarned).toBe(0);
+      expect(rows.find((r) => r.featureId === 'a')?.penaltyPoints).toBe(0);
+    });
   });
 });
