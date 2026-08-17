@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import {
   Calculator,
   FileSearch,
-  MessageCircleQuestion,
   ShieldAlert,
   MessageSquare,
   Loader2,
@@ -401,10 +400,10 @@ export default function ApartmentDetailView() {
                       The listing text has not been read. Activate this listing to have its
                       description checked for lease terms, fees and restrictions.
                     </p>
-                  ) : aiReview.flags?.length === 0 && aiReview.unknowns?.length === 0 ? (
+                  ) : aiReview.flags?.length === 0 ? (
                     <p className="text-xs text-zinc-500 leading-relaxed bg-zinc-950 border border-zinc-800 p-4 rounded-2xl">
                       Read, and nothing worth flagging was found. The description states no
-                      unusual conditions and covers everything you weighted highly.
+                      unusual conditions.
                     </p>
                   ) : (
                     <div className="space-y-4">
@@ -431,25 +430,6 @@ export default function ApartmentDetailView() {
                         </div>
                       )}
 
-                      {aiReview.unknowns?.length > 0 && (
-                        <div className="space-y-3 bg-blue-950/10 border border-blue-500/20 p-4 rounded-2xl">
-                          <h4 className="font-extrabold text-xs text-blue-400 flex items-center gap-2 uppercase tracking-wider">
-                            <MessageCircleQuestion className="w-3.5 h-3.5 shrink-0" />
-                            <span>Ask before you commit</span>
-                          </h4>
-                          <p className="text-[11px] text-zinc-500 leading-relaxed">
-                            Weighted highly by you, and never addressed in the description.
-                          </p>
-                          <ul className="space-y-2.5">
-                            {aiReview.unknowns.map((unknown: any, idx: number) => (
-                              <li key={idx} className="text-xs sm:text-sm leading-relaxed">
-                                <span className="font-semibold text-zinc-100">{unknown.feature}</span>
-                                <span className="text-zinc-400"> — {unknown.ask}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>

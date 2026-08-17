@@ -366,16 +366,19 @@ export function useLogMessage() {
       id,
       sender,
       text,
+      status,
       metadata,
     }: {
       id: string;
       sender: 'landlord' | 'ai_suggestion' | 'user';
       text: string;
+      /** Omit to take the server's default: sent for yours, draft for an AI one. */
+      status?: 'draft' | 'sent';
       metadata?: any;
     }) => {
       return apiFetch<any>(`/apartments/${id}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ sender, text, metadata }),
+        body: JSON.stringify({ sender, text, ...(status ? { status } : {}), metadata }),
       });
     },
     onSuccess: (_, variables) => {
@@ -409,10 +412,20 @@ export function useUpdateMessage() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ id, messageId, text }: { id: string; messageId: string; text: string }) => {
+    mutationFn: async ({
+      id,
+      messageId,
+      text,
+      status,
+    }: {
+      id: string;
+      messageId: string;
+      text?: string;
+      status?: 'draft' | 'sent';
+    }) => {
       return apiFetch<any>(`/apartments/${id}/messages/${messageId}`, {
         method: 'PATCH',
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ ...(text !== undefined ? { text } : {}), ...(status ? { status } : {}) }),
       });
     },
     onSuccess: (_, variables) => {

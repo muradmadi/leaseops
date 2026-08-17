@@ -15,12 +15,25 @@ export async function removeMessagesByApartmentId(apartmentId: string): Promise<
   await db.delete(messages).where(eq(messages.apartmentId, apartmentId));
 }
 
-export async function updateMessage(id: string, text: string): Promise<Message | undefined> {
-  const [updated] = await db
-    .update(messages)
-    .set({ text, updatedAt: new Date() })
-    .where(eq(messages.id, id))
-    .returning();
+/**
+ * Patches a message's text, its status, or both.
+ *
+ * `status` is what separates an AI draft you actually sent (`'sent'`) from one
+ * still sitting on screen (`'ready'`). That distinction is load-bearing: the
+ * reply prompt builds the tenant's stated position out of sent messages only, so
+ * a draft that was never used must not be able to become a fact about them.
+ * It rides the existing column rather than a new one — no migration, and the
+ * chat already renders it as a badge.
+ */
+export async function updateMessage(
+  id: string,
+  patch: { text?: string; status?: string }
+): Promise<Message | undefined> {
+  const changes: Partial<Message> = { updatedAt: new Date() };
+  if (patch.text !== undefined) changes.text = patch.text;
+  if (patch.status !== undefined) changes.status = patch.status;
+
+  const [updated] = await db.update(messages).set(changes).where(eq(messages.id, id)).returning();
   return updated;
 }
 

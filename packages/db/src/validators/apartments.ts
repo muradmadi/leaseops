@@ -95,9 +95,10 @@ export const listApartmentsQuerySchema = z.object({
 });
 
 /**
- * The single listing analysis.
+ * The single listing analysis: the conditions this listing states, and nothing
+ * else.
  *
- * Every array may be empty, and empty is a valid, expected answer — there are no
+ * `flags` may be empty, and empty is a valid, expected answer — there are no
  * quotas anywhere in this shape. The previous version demanded exactly three cons,
  * which is why it invented trade-offs for flats that had none.
  *
@@ -107,10 +108,16 @@ export const listApartmentsQuerySchema = z.object({
  *
  * A flag must quote the listing verbatim, so a claim with no source in the text
  * cannot be expressed here at all.
+ *
+ * There was a second array, `unknowns`: features the user had not rated that the
+ * description never mentioned, each with a question to put to the landlord. It is
+ * gone. It could only ever report silence in a listing, and landlords omit almost
+ * everything — so it asked about whatever the advert happened not to mention
+ * rather than what mattered, on every listing. The stated conditions are the part
+ * worth having.
  */
 export const AiReviewSchema = z.object({
   flags: z.array(z.object({ issue: z.string(), quote: z.string() })).default([]),
-  unknowns: z.array(z.object({ feature: z.string(), ask: z.string() })).default([]),
   /** False when no model read the listing, so the UI can say so rather than imply it. */
   analysed: z.boolean().default(true),
 });

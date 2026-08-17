@@ -247,7 +247,7 @@ describe('Apartments Route', () => {
     // The analysis holds only what was read from the listing. Verdict, strengths
     // and concerns are derived from the score and live on featureScores.highlights.
     expect(Array.isArray(generated.flags)).toBe(true);
-    expect(Array.isArray(generated.unknowns)).toBe(true);
+    expect(generated.unknowns).toBeUndefined();
     expect(typeof generated.analysed).toBe('boolean');
 
     // The generated review must be persisted, not recomputed per request.
@@ -259,7 +259,6 @@ describe('Apartments Route', () => {
     expect(getRes.status).toBe(200);
     const fetched: any = await getRes.json();
     expect(fetched.flags).toEqual(generated.flags);
-    expect(fetched.unknowns).toEqual(generated.unknowns);
   });
 
   it('archives rather than destroys on DELETE, and can restore', async () => {
@@ -721,5 +720,116 @@ describe('Manual set-aside', () => {
       await stranger.cleanup();
       await owner.cleanup();
     }
+  });
+});
+
+/**
+ * The conversation endpoints. Tests run with no household key, so
+ * `resolveLlmConfig` resolves to null and the suggest route takes its offline
+ * path — which is exactly the branch worth pinning down.
+ */
+describe('Conversation', () => {
+  let account: TestAccount;
+  let apartmentId: string;
+
+  beforeAll(async () => {
+    account = await createTestAccount('chat');
+    const created: any = await (
+      await app.fetch(
+        new Request('http://localhost/api/apartments', {
+          method: 'POST',
+          headers: authHeaders(account),
+          body: JSON.stringify({ title: 'Chat test flat', price: 800, description: 'A flat.' }),
+        })
+      )
+    ).json();
+    apartmentId = created.id;
+  });
+
+  afterAll(async () => {
+    await account.cleanup();
+  });
+
+  async function log(sender: string, text: string) {
+    const res = await app.fetch(
+      new Request(`http://localhost/api/apartments/${apartmentId}/messages`, {
+        method: 'POST',
+        headers: authHeaders(account),
+        body: JSON.stringify({ sender, text }),
+      })
+    );
+    expect(res.status).toBe(201);
+    return res.json() as Promise<any>;
+  }
+
+  it('refuses to suggest a reply before there is anything to reply to', async () => {
+    const res = await app.fetch(
+      new Request(`http://localhost/api/apartments/${apartmentId}/messages/suggest`, {
+        method: 'POST',
+        headers: authHeaders(account),
+      })
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('says it is offline rather than saving invented filler as a suggestion', async () => {
+    await log('landlord', '¿Cuanto gana al mes?');
+
+    const res = await app.fetch(
+      new Request(`http://localhost/api/apartments/${apartmentId}/messages/suggest`, {
+        method: 'POST',
+        headers: authHeaders(account),
+      })
+    );
+    expect(res.status).toBe(409);
+    expect((await res.json()).message).toContain('Settings');
+
+    // Nothing was written to the thread by the failed attempt.
+    const messages: any[] = await (
+      await app.fetch(
+        new Request(`http://localhost/api/apartments/${apartmentId}/messages`, {
+          headers: authHeaders(account),
+        })
+      )
+    ).json();
+    expect(messages.filter((m) => m.sender === 'ai_suggestion')).toHaveLength(0);
+  });
+
+  it('stores a message you wrote as yours and already sent', async () => {
+    const mine = await log('user', 'Le escribo yo mismo.');
+    expect(mine.sender).toBe('user');
+    expect(mine.status).toBe('sent');
+    expect(mine.metadata).toBeNull();
+  });
+
+  it('marks a draft as sent without touching its text', async () => {
+    const draft = await log('ai_suggestion', 'Draft wording.');
+    // An AI proposal is a draft until you say otherwise; a message you typed is not.
+    expect(draft.status).toBe('draft');
+
+    const res = await app.fetch(
+      new Request(`http://localhost/api/apartments/${apartmentId}/messages/${draft.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(account),
+        body: JSON.stringify({ status: 'sent' }),
+      })
+    );
+    expect(res.status).toBe(200);
+
+    const updated: any = await res.json();
+    expect(updated.status).toBe('sent');
+    expect(updated.text).toBe('Draft wording.');
+  });
+
+  it('rejects a patch that changes nothing', async () => {
+    const draft = await log('ai_suggestion', 'Another draft.');
+    const res = await app.fetch(
+      new Request(`http://localhost/api/apartments/${apartmentId}/messages/${draft.id}`, {
+        method: 'PATCH',
+        headers: authHeaders(account),
+        body: JSON.stringify({}),
+      })
+    );
+    expect(res.status).toBe(400);
   });
 });

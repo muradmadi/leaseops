@@ -6,15 +6,48 @@ import {
   X,
   MessageSquare,
   Check,
+  Copy,
   Loader2,
   ShieldAlert,
   Sparkles,
+  Undo2,
   User,
   Bot,
   Pencil,
   Trash2
 } from 'lucide-react';
 
+/**
+ * Whether a message went to the landlord — the one thing that decides if the AI
+ * treats it as something you said. Stated by hand, never inferred from a copy.
+ */
+function StatusBadge({ sent }: { sent: boolean }) {
+  return (
+    <span
+      title={
+        sent
+          ? 'Counted as something you said when drafting the next reply.'
+          : 'Left out when drafting the next reply.'
+      }
+      className={`text-[10px] px-2 py-0.5 rounded-full font-bold border shrink-0 ${
+        sent
+          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+          : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+      }`}
+    >
+      {sent ? 'Sent' : 'Draft'}
+    </span>
+  );
+}
+
+/**
+ * The conversation with one landlord.
+ *
+ * `sender` has three values and they must stay visually distinct: a message you
+ * typed used to render in the AI branch, badged "AI Suggested Reply", which made
+ * the thread useless as a record of what you actually sent — and fed that
+ * confusion straight back into the next suggestion.
+ */
 export default function ChatView() {
   const params = useParams();
   const id = params?.id || '';
@@ -27,8 +60,11 @@ export default function ChatView() {
   const deleteMessageMutation = useDeleteMessage();
 
   const [draftMessage, setDraftMessage] = useState<{sender: 'landlord' | 'user', text: string} | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [editingMessage, setEditingMessage] = useState<{ id: string, text: string } | null>(null);
+
+  const busy = logMessageMutation.isPending || aiSuggestMutation.isPending || initMessagesMutation.isPending;
+  const actionError = aiSuggestMutation.error || initMessagesMutation.error;
 
   const handleUpdateMessage = async () => {
     if (!editingMessage || !editingMessage.text.trim()) return;
@@ -40,9 +76,7 @@ export default function ChatView() {
     return (
       <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col items-center justify-center p-8 space-y-4">
         <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
-        <span className="text-sm font-semibold text-zinc-400">
-          {isMessagesLoading ? 'AI is analyzing profile and drafting outreach message...' : 'Loading communications hub...'}
-        </span>
+        <span className="text-sm font-semibold text-zinc-400">Loading conversation...</span>
       </div>
     );
   }
@@ -62,27 +96,46 @@ export default function ChatView() {
     );
   }
 
-  const handleCopy = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
+  /**
+   * Copying does not change anything. Whether a message went to the landlord is
+   * yours to state — you might copy a draft out to edit it elsewhere, and having
+   * that silently register as sent would put words in your mouth in the next
+   * suggestion.
+   */
+  const handleCopy = (msg: any) => {
+    navigator.clipboard.writeText(msg.text);
+    setCopiedId(msg.id);
+    setTimeout(() => setCopiedId((current) => (current === msg.id ? null : current)), 2500);
   };
 
-  const handleSaveDraft = async () => {
+  const setStatus = (msg: any, status: 'sent' | 'draft') =>
+    updateMessageMutation.mutate({ id, messageId: msg.id, status });
+
+  /** Rejecting removes it, as if the suggestion had never been generated. */
+  const handleReject = (msg: any) => deleteMessageMutation.mutate({ id, messageId: msg.id });
+
+  const handleSaveDraft = async (status?: 'sent' | 'draft') => {
     if (!draftMessage || !draftMessage.text.trim()) return;
     const { sender, text } = draftMessage;
     setDraftMessage(null);
 
-    await logMessageMutation.mutateAsync({
-      id,
-      sender,
-      text: text.trim(),
-      metadata: { originalLanguage: sender === 'landlord' ? 'Auto-detected' : 'English', translated: sender === 'landlord' },
-    });
+    await logMessageMutation.mutateAsync({ id, sender, text: text.trim(), status });
   };
 
   const handleAiSuggest = async () => {
-    await aiSuggestMutation.mutateAsync({ id });
+    try {
+      await aiSuggestMutation.mutateAsync({ id });
+    } catch {
+      // Surfaced by the banner below; apiFetch throws on every non-2xx.
+    }
+  };
+
+  const handleInit = async () => {
+    try {
+      await initMessagesMutation.mutateAsync(id);
+    } catch {
+      // Same.
+    }
   };
 
   const formatPrice = (price?: number | null, currency?: string | null) => {
@@ -94,6 +147,32 @@ export default function ChatView() {
       return `${price} ${curr}`;
     }
   };
+
+  const timeOf = (value: string | number | Date) =>
+    new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  const editor = (msg: any, accent: 'blue' | 'emerald') => (
+    <div className="flex flex-col gap-2 mt-2">
+      <textarea
+        className={`w-full bg-zinc-950 border rounded-lg p-2 text-[16px] sm:text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none min-h-[60px] ${
+          accent === 'blue' ? 'border-zinc-800 focus:border-blue-500' : 'border-emerald-500/30 focus:border-emerald-500'
+        }`}
+        value={editingMessage!.text}
+        onChange={(e) => setEditingMessage({ ...editingMessage!, text: e.target.value })}
+      />
+      <div className="flex gap-2 justify-end">
+        <button onClick={() => setEditingMessage(null)} className="min-h-[44px] px-3 text-xs text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
+        <button
+          onClick={handleUpdateMessage}
+          className={`min-h-[44px] px-4 rounded-lg text-xs font-bold text-white transition-colors ${
+            accent === 'blue' ? 'bg-blue-600 hover:bg-blue-500' : 'bg-emerald-600 hover:bg-emerald-500'
+          }`}
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="min-h-[100dvh] max-h-[100dvh] flex flex-col justify-between bg-zinc-950 text-zinc-100 font-sans selection:bg-blue-500/20 selection:text-blue-400 overflow-hidden">
@@ -141,11 +220,11 @@ export default function ChatView() {
           <div className="flex flex-col items-center justify-center p-8 space-y-4 mt-12 bg-zinc-900/50 border border-zinc-800/80 rounded-3xl animate-in fade-in duration-300">
             <Bot className="w-12 h-12 text-emerald-400" />
             <h2 className="text-xl font-bold text-zinc-100">Start the Conversation</h2>
-            <p className="text-sm text-zinc-400 text-center max-w-sm">Generate a highly personalized initial AI outreach message based on your tenant persona and the property's metrics.</p>
+            <p className="text-sm text-zinc-400 text-center max-w-sm">Draft the first message to the landlord from your household profile and what this listing asks for.</p>
             <button
-              onClick={() => initMessagesMutation.mutate(id)}
+              onClick={handleInit}
               disabled={initMessagesMutation.isPending}
-              className="px-6 py-3 mt-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition-all shadow-lg shadow-emerald-500/20 flex items-center gap-2 disabled:opacity-50"
+              className="px-6 py-3 mt-4 min-h-[44px] rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition-all shadow-lg shadow-emerald-500/20 flex items-center gap-2 disabled:opacity-50 cursor-pointer active:scale-95"
             >
               {initMessagesMutation.isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Sparkles className="w-5 h-5" />}
               Draft Initial Outreach
@@ -154,6 +233,9 @@ export default function ChatView() {
         )}
 
         {messages.map((msg) => {
+          const isEditing = editingMessage?.id === msg.id;
+
+          /* ---------- Landlord ---------- */
           if (msg.sender === 'landlord') {
             return (
               <div key={msg.id} className="flex justify-start items-end gap-2.5 animate-in fade-in slide-in-from-left-4 duration-300">
@@ -162,91 +244,115 @@ export default function ChatView() {
                 </div>
                 <div className="max-w-[85%] sm:max-w-md bg-zinc-900 border border-zinc-800/90 text-zinc-100 rounded-2xl rounded-bl-sm p-4 text-sm space-y-1.5 shadow-lg">
                   <div className="flex items-center justify-between gap-4 text-[10px] font-bold text-zinc-400">
-                    <span className="text-blue-400 uppercase tracking-wider flex items-center gap-1">
-                      <Sparkles className="w-3 h-3" />
-                      Landlord ({msg.metadata?.originalLanguage || 'Auto'} → English)
-                    </span>
+                    <span className="text-blue-400 uppercase tracking-wider">Landlord</span>
                     <div className="flex items-center gap-2">
-                      <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                      <button onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="hover:text-zinc-200"><Pencil className="w-3 h-3" /></button>
-                      <button onClick={() => deleteMessageMutation.mutate({ id, messageId: msg.id })} className="hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
+                      <span>{timeOf(msg.createdAt)}</span>
+                      <button title="Edit" onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="hover:text-zinc-200"><Pencil className="w-3 h-3" /></button>
+                      <button title="Delete" onClick={() => deleteMessageMutation.mutate({ id, messageId: msg.id })} className="hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
                     </div>
                   </div>
-                  {editingMessage && editingMessage.id === msg.id ? (
-                    <div className="flex flex-col gap-2 mt-2">
-                      <textarea
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg p-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500 min-h-[60px]"
-                        value={editingMessage.text}
-                        onChange={(e) => setEditingMessage({ ...editingMessage, text: e.target.value })}
-                      />
-                      <div className="flex gap-2 justify-end">
-                        <button onClick={() => setEditingMessage(null)} className="text-xs text-zinc-400 hover:text-zinc-200">Cancel</button>
-                        <button onClick={handleUpdateMessage} className="text-xs bg-blue-600 hover:bg-blue-500 px-2 py-1 rounded text-white font-bold">Save</button>
-                      </div>
-                    </div>
-                  ) : (
+                  {isEditing ? editor(msg, 'blue') : (
                     <p className="leading-relaxed text-zinc-200 whitespace-pre-wrap">{msg.text}</p>
                   )}
                 </div>
               </div>
             );
-          } else {
+          }
+
+          /* ---------- Your own message ---------- */
+          if (msg.sender === 'user') {
+            const sent = msg.status !== 'draft';
             return (
               <div key={msg.id} className="flex justify-end items-end gap-2.5 animate-in fade-in slide-in-from-right-4 duration-300">
-                <div className="max-w-[85%] sm:max-w-md border-2 border-emerald-500/40 bg-gradient-to-br from-emerald-950/40 to-zinc-900 text-zinc-100 rounded-2xl rounded-br-sm p-4 text-sm space-y-3 shadow-xl shadow-emerald-500/5">
-                  <div className="flex items-center justify-between gap-4">
-                    <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-                      <Bot className="w-3.5 h-3.5" />
-                      {/* `generated` is true for both kinds, so it cannot distinguish them.
-                          `personaTuned` keeps messages created before `kind` existed labelled correctly. */}
-                      {msg.metadata?.kind === 'outreach' ||
-                      (msg.metadata?.generated && !msg.metadata?.kind && !msg.metadata?.personaTuned)
-                        ? 'AI Initial Outreach Draft'
-                        : 'AI Suggested Reply'}
-                    </span>
+                <div className="max-w-[85%] sm:max-w-md bg-blue-950/40 border border-blue-500/30 text-zinc-100 rounded-2xl rounded-br-sm p-4 text-sm space-y-2.5 shadow-lg">
+                  <div className="flex items-center justify-between gap-3 text-[10px] font-bold text-zinc-400">
+                    <span className="text-blue-300 uppercase tracking-wider">You</span>
                     <div className="flex items-center gap-2">
-                      <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
-                        {msg.status || 'Ready'}
-                      </span>
-                      <button onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="text-emerald-400 hover:text-emerald-300"><Pencil className="w-3 h-3" /></button>
-                      <button onClick={() => deleteMessageMutation.mutate({ id, messageId: msg.id })} className="text-red-400/80 hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
+                      <StatusBadge sent={sent} />
+                      <span>{timeOf(msg.createdAt)}</span>
+                      <button title="Edit" onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="hover:text-zinc-200"><Pencil className="w-3 h-3" /></button>
+                      <button title="Delete" onClick={() => deleteMessageMutation.mutate({ id, messageId: msg.id })} className="hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
                     </div>
                   </div>
-                  {editingMessage && editingMessage.id === msg.id ? (
-                    <div className="flex flex-col gap-2">
-                      <textarea
-                        className="w-full bg-zinc-950 border border-emerald-500/30 rounded-lg p-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 min-h-[60px]"
-                        value={editingMessage.text}
-                        onChange={(e) => setEditingMessage({ ...editingMessage, text: e.target.value })}
-                      />
-                      <div className="flex gap-2 justify-end">
-                        <button onClick={() => setEditingMessage(null)} className="text-xs text-zinc-400 hover:text-zinc-200">Cancel</button>
-                        <button onClick={handleUpdateMessage} className="text-xs bg-emerald-600 hover:bg-emerald-500 px-2 py-1 rounded text-white font-bold">Save</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="leading-relaxed text-zinc-100 font-medium bg-zinc-950/60 p-3 rounded-xl border border-emerald-500/20 whitespace-pre-wrap">
-                      {msg.text}
-                    </div>
+                  {isEditing ? editor(msg, 'blue') : (
+                    <p className="leading-relaxed text-zinc-100 whitespace-pre-wrap">{msg.text}</p>
                   )}
-                  <div className="flex gap-2 pt-1">
-                    <button
-                      onClick={() => handleCopy(msg.text)}
-                      className={`flex-1 ${
-                        copied ? 'bg-emerald-400 text-zinc-950' : 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950'
-                      } font-extrabold py-3 px-4 rounded-xl text-xs transition-all flex items-center justify-center gap-2 min-h-[44px] cursor-pointer active:scale-95 shadow-lg shadow-emerald-500/20`}
-                    >
-                      <Check className="w-4 h-4 stroke-[3]" />
-                      <span>{copied ? 'Copied to Clipboard!' : 'Copy & Mark Reached Out'}</span>
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => setStatus(msg, sent ? 'draft' : 'sent')}
+                    className="w-full min-h-[44px] rounded-xl bg-zinc-900/70 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-[0.98]"
+                  >
+                    {sent ? <Undo2 className="w-3.5 h-3.5" /> : <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                    {sent ? 'Move back to draft' : 'Mark as sent'}
+                  </button>
                 </div>
-                <div className="w-8 h-8 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0 mb-1">
-                  <Bot className="w-4 h-4" />
+                <div className="w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-300 shrink-0 mb-1">
+                  <User className="w-4 h-4" />
                 </div>
               </div>
             );
           }
+
+          /* ---------- AI suggestion ---------- */
+          const isSent = msg.status === 'sent';
+          const isOutreach =
+            msg.metadata?.kind === 'outreach' ||
+            // `generated` is true for both kinds, so it cannot distinguish them.
+            // `personaTuned` keeps messages created before `kind` existed labelled correctly.
+            (msg.metadata?.generated && !msg.metadata?.kind && !msg.metadata?.personaTuned);
+
+          return (
+            <div key={msg.id} className="flex justify-end items-end gap-2.5 animate-in fade-in slide-in-from-right-4 duration-300">
+              <div className="max-w-[85%] sm:max-w-md border-2 border-emerald-500/40 bg-gradient-to-br from-emerald-950/40 to-zinc-900 text-zinc-100 rounded-2xl rounded-br-sm p-4 text-sm space-y-3 shadow-xl shadow-emerald-500/5">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Bot className="w-3.5 h-3.5" />
+                    {isOutreach ? 'AI Initial Outreach Draft' : 'AI Suggested Reply'}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <StatusBadge sent={isSent} />
+                    <span className="text-[10px] font-bold text-zinc-400">{timeOf(msg.createdAt)}</span>
+                    <button title="Edit" onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="text-emerald-400 hover:text-emerald-300"><Pencil className="w-3 h-3" /></button>
+                  </div>
+                </div>
+                {isEditing ? editor(msg, 'emerald') : (
+                  <div className="leading-relaxed text-zinc-100 font-medium bg-zinc-950/60 p-3 rounded-xl border border-emerald-500/20 whitespace-pre-wrap">
+                    {msg.text}
+                  </div>
+                )}
+                <div className="flex flex-col gap-2 pt-1">
+                  <button
+                    onClick={() => handleCopy(msg)}
+                    className={`w-full ${
+                      copiedId === msg.id ? 'bg-emerald-400 text-zinc-950' : 'bg-emerald-500 hover:bg-emerald-400 text-zinc-950'
+                    } font-extrabold py-3 px-4 rounded-xl text-xs transition-all flex items-center justify-center gap-2 min-h-[44px] cursor-pointer active:scale-[0.98] shadow-lg shadow-emerald-500/20`}
+                  >
+                    {copiedId === msg.id ? <Check className="w-4 h-4 stroke-[3]" /> : <Copy className="w-4 h-4 stroke-[3]" />}
+                    <span>{copiedId === msg.id ? 'Copied!' : 'Copy'}</span>
+                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setStatus(msg, isSent ? 'draft' : 'sent')}
+                      className="flex-1 min-h-[44px] rounded-xl bg-zinc-900/70 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98]"
+                    >
+                      {isSent ? <Undo2 className="w-3.5 h-3.5" /> : <Check className="w-3.5 h-3.5 stroke-[3]" />}
+                      {isSent ? 'Not sent' : 'Mark sent'}
+                    </button>
+                    <button
+                      onClick={() => handleReject(msg)}
+                      title="Remove this suggestion entirely"
+                      className="flex-1 min-h-[44px] rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-300 text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-[0.98]"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      {isSent ? 'Delete' : 'Reject'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div className="w-8 h-8 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0 mb-1">
+                <Bot className="w-4 h-4" />
+              </div>
+            </div>
+          );
         })}
 
         {draftMessage && (
@@ -257,46 +363,41 @@ export default function ChatView() {
               </div>
               <div className="w-full max-w-[85%] sm:max-w-md bg-zinc-900 border border-zinc-800/90 text-zinc-100 rounded-2xl rounded-bl-sm p-4 text-sm space-y-3 shadow-lg">
                 <div className="flex items-center justify-between gap-4 text-[10px] font-bold text-zinc-400">
-                  <span className="text-blue-400 uppercase tracking-wider flex items-center gap-1">
-                    <Sparkles className="w-3 h-3" />
-                    New Landlord Response
-                  </span>
+                  <span className="text-blue-400 uppercase tracking-wider">Log landlord reply</span>
                 </div>
                 <textarea
                   autoFocus
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 min-h-[80px]"
-                  placeholder="Type landlord's response here..."
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-[16px] sm:text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 min-h-[80px]"
+                  placeholder="Paste what the landlord wrote back..."
                   value={draftMessage.text}
                   onChange={(e) => setDraftMessage({ ...draftMessage, text: e.target.value })}
                 />
                 <div className="flex gap-2 justify-end">
-                  <button onClick={() => setDraftMessage(null)} className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-zinc-100 transition-colors">Cancel</button>
-                  <button onClick={handleSaveDraft} disabled={!draftMessage.text.trim()} className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-colors shadow-lg shadow-blue-500/20 disabled:opacity-50">Save Message</button>
+                  <button onClick={() => setDraftMessage(null)} className="px-4 min-h-[44px] rounded-xl text-xs font-semibold text-zinc-400 hover:text-zinc-100 transition-colors">Cancel</button>
+                  <button onClick={() => handleSaveDraft()} disabled={!draftMessage.text.trim()} className="px-4 min-h-[44px] rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-colors shadow-lg shadow-blue-500/20 disabled:opacity-50 cursor-pointer active:scale-95">Save Message</button>
                 </div>
               </div>
             </div>
           ) : (
             <div className="flex justify-end items-end gap-2.5 animate-in fade-in slide-in-from-right-4 duration-300">
-              <div className="w-full max-w-[85%] sm:max-w-md border-2 border-emerald-500/40 bg-gradient-to-br from-emerald-950/40 to-zinc-900 text-zinc-100 rounded-2xl rounded-br-sm p-4 text-sm space-y-3 shadow-xl shadow-emerald-500/5">
-                <div className="flex items-center justify-between gap-4">
-                  <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-                    <User className="w-3.5 h-3.5" />
-                    New User Message
-                  </span>
+              <div className="w-full max-w-[85%] sm:max-w-md bg-blue-950/40 border border-blue-500/30 text-zinc-100 rounded-2xl rounded-br-sm p-4 text-sm space-y-3 shadow-lg">
+                <div className="flex items-center justify-between gap-4 text-[10px] font-bold text-zinc-400">
+                  <span className="text-blue-300 uppercase tracking-wider">Your message</span>
                 </div>
                 <textarea
                   autoFocus
-                  className="w-full bg-zinc-950 border border-emerald-500/30 rounded-xl p-3 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500/50 min-h-[80px]"
-                  placeholder="Type your response here..."
+                  className="w-full bg-zinc-950 border border-blue-500/30 rounded-xl p-3 text-[16px] sm:text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 min-h-[80px]"
+                  placeholder="Write or paste your message..."
                   value={draftMessage.text}
                   onChange={(e) => setDraftMessage({ ...draftMessage, text: e.target.value })}
                 />
                 <div className="flex gap-2 justify-end">
-                  <button onClick={() => setDraftMessage(null)} className="px-4 py-2 rounded-xl text-xs font-semibold text-zinc-400 hover:text-zinc-100 transition-colors">Cancel</button>
-                  <button onClick={handleSaveDraft} disabled={!draftMessage.text.trim()} className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors shadow-lg shadow-emerald-500/20 disabled:opacity-50">Save Message</button>
+                  <button onClick={() => setDraftMessage(null)} className="px-4 min-h-[44px] rounded-xl text-xs font-semibold text-zinc-400 hover:text-zinc-100 transition-colors">Cancel</button>
+                  <button onClick={() => handleSaveDraft('draft')} disabled={!draftMessage.text.trim()} className="px-4 min-h-[44px] rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer active:scale-95">Save as draft</button>
+                  <button onClick={() => handleSaveDraft('sent')} disabled={!draftMessage.text.trim()} className="px-4 min-h-[44px] rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-colors shadow-lg shadow-blue-500/20 disabled:opacity-50 cursor-pointer active:scale-95">Save as sent</button>
                 </div>
               </div>
-              <div className="w-8 h-8 rounded-full bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0 mb-1">
+              <div className="w-8 h-8 rounded-full bg-blue-500/20 border border-blue-500/40 flex items-center justify-center text-blue-300 shrink-0 mb-1">
                 <User className="w-4 h-4" />
               </div>
             </div>
@@ -306,31 +407,40 @@ export default function ChatView() {
 
       {/* Input Logger Footer */}
       <footer className="border-t border-zinc-900 bg-zinc-950/95 backdrop-blur-md p-3 sm:p-4 shrink-0">
-        <div className="max-w-4xl mx-auto flex flex-col sm:flex-row gap-2 sm:gap-3 justify-center items-center">
-          <button
-            onClick={() => setDraftMessage({ sender: 'landlord', text: '' })}
-            disabled={logMessageMutation.isPending || aiSuggestMutation.isPending || !!draftMessage}
-            className="flex-1 w-full bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-blue-400 font-bold px-4 py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 shadow-sm disabled:opacity-40"
-          >
-            <User className="w-4 h-4" />
-            <span>Add Landlord Response</span>
-          </button>
-          <button
-            onClick={() => setDraftMessage({ sender: 'user', text: '' })}
-            disabled={logMessageMutation.isPending || aiSuggestMutation.isPending || !!draftMessage}
-            className="flex-1 w-full bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-emerald-400 font-bold px-4 py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 shadow-sm disabled:opacity-40"
-          >
-            <User className="w-4 h-4" />
-            <span>Add User Response</span>
-          </button>
-          <button
-            onClick={handleAiSuggest}
-            disabled={logMessageMutation.isPending || aiSuggestMutation.isPending || !!draftMessage}
-            className="flex-1 w-full bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-extrabold px-4 py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 shadow-lg shadow-emerald-500/20 disabled:opacity-40"
-          >
-            {aiSuggestMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
-            <span>AI Suggestion</span>
-          </button>
+        <div className="max-w-4xl mx-auto flex flex-col gap-3">
+          {actionError && (
+            <div className="flex items-start gap-2.5 bg-red-500/10 border border-red-500/30 text-red-300 rounded-xl px-4 py-3 text-xs font-semibold animate-in fade-in duration-200">
+              <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
+              <span className="leading-relaxed">{actionError.message}</span>
+            </div>
+          )}
+          <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 justify-center items-center">
+            <button
+              onClick={() => setDraftMessage({ sender: 'landlord', text: '' })}
+              disabled={busy || !!draftMessage}
+              className="flex-1 w-full min-h-[44px] bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-blue-400 font-bold px-4 py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 shadow-sm disabled:opacity-40"
+            >
+              <User className="w-4 h-4" />
+              <span>Add Landlord Response</span>
+            </button>
+            <button
+              onClick={() => setDraftMessage({ sender: 'user', text: '' })}
+              disabled={busy || !!draftMessage}
+              className="flex-1 w-full min-h-[44px] bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-blue-300 font-bold px-4 py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 shadow-sm disabled:opacity-40"
+            >
+              <User className="w-4 h-4" />
+              <span>Add Your Message</span>
+            </button>
+            <button
+              onClick={handleAiSuggest}
+              disabled={busy || !!draftMessage || messages.length === 0}
+              title={messages.length === 0 ? 'Draft the initial outreach first' : undefined}
+              className="flex-1 w-full min-h-[44px] bg-gradient-to-r from-emerald-600 to-emerald-500 hover:from-emerald-500 hover:to-emerald-400 text-white font-extrabold px-4 py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 shadow-lg shadow-emerald-500/20 disabled:opacity-40"
+            >
+              {aiSuggestMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Bot className="w-4 h-4" />}
+              <span>AI Suggestion</span>
+            </button>
+          </div>
         </div>
       </footer>
     </div>

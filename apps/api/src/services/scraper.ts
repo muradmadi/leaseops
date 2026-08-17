@@ -165,12 +165,7 @@ export async function processListingAsync(
       try {
         listing.aiReview = await analyseListing(
           await resolveLlmConfig(householdId),
-          listing.title,
-          price,
-          listing.description,
-          listing,
-          userProfile,
-          { evaluations, result: mcdaResult }
+          listing.description
         );
       } catch (revErr: any) {
         console.warn(`[Enrichment] AI review failed for ${apartmentId}: ${revErr.message}`);

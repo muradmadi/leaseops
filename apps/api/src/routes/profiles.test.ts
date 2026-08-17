@@ -35,7 +35,6 @@ describe('Household Profiles & Onboarding MCDA Weights API Flow', () => {
   const payload = {
     targetLocation: 'Berlin, Mitte',
     targetLanguage: 'German',
-    autoTranslateListings: true,
     autoDraftMessages: true,
     currency: 'EUR',
     idealRent: 1350,

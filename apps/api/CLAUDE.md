@@ -286,13 +286,57 @@ analysis `flags`) and the facts the tenant actually supplied.
 - **The first message asks no questions.** Its only job is to get you seen in
   person, and every question is a reason to reply later instead of booking now.
   Anything about cupboards, appliances or fittings is answered by standing in the
-  flat. `analyseListing` still returns `unknowns` — they are a viewing checklist
-  shown in the app, not something to put in front of a landlord screening forty
-  applicants.
+  flat.
 - No compliments about the property, no filler closings, no self-describing
   adjectives, under 110 words.
 - The sign-off is appended in code if the model drops it, using the real household
   name only.
+
+## Chat replies
+
+`suggestChatReply` is the same job as outreach one message later, and it must
+stay as well equipped. It drifted badly once — a 261-word prompt beside
+outreach's 1,467, no listing context, and no tests — and produced replies that
+repeated themselves, ended three different ways, and contradicted the persona.
+
+- **It gets the same grounded inputs as outreach**: the listing description, the
+  requirements from `aiReview.flags` behind the shared
+  `MIN_FACTS_FOR_REQUIREMENTS` guard, and the measured `criticalShortfalls`. The
+  route used to pass the review and the scores into parameters named `_aiReview`
+  and `_featureScores` that nothing read.
+- **Only messages the tenant actually sent are facts.** `countsAsSent` decides,
+  and `messages.status` is stated by hand: `'sent'` or `'draft'`. An AI draft is
+  created `'draft'` and a message you typed is created `'sent'`, because the
+  first is a proposal and the second is something you wrote. Rejecting a bad
+  suggestion **deletes** it, so a message still in the thread is either sent or
+  explicitly pending — there is nothing to infer. A rejected draft saying "I can
+  travel to Alicante" turned the next suggestion into exactly that promise,
+  against a persona stating the opposite.
+- **`'ready'` is the old default and means nobody ever said.** Rows predating the
+  buttons resolve by kind: a `user` message is theirs by definition, an
+  `ai_suggestion` falls back to the thread's shape (a landlord turn after it means
+  it went; a `user` turn first means it was superseded). Keep that path — it is
+  the only thing that keeps existing conversations intact.
+- **Copying does not mark anything sent.** It did briefly, and it is wrong: you
+  copy a draft out to edit it elsewhere, and a silent status change puts words in
+  your mouth in the next suggestion. Marking is a separate, reversible action.
+- **Only the landlord is untrusted.** `buildChatTranscript` wraps their turns in
+  `untrustedSpan` and leaves ours plain. Wrapping the whole transcript told the
+  model to treat the tenant's own messages as third-party data it must not act
+  on, while the same prompt asked it to build the reply from those messages.
+- **A demand is not met by promising to meet it.** Where the owner insists on
+  something the facts do not support — attending in person, a date, a form of
+  guarantee — the reply states the true position and offers whatever alternative
+  the facts actually name. Conceding on paper wastes the viewing and is found out
+  at signing.
+- **`HOW TO WRITE ABOUT EACH PERSON` sits last**, for the reason given under
+  Outreach. It used to sit third and is the same bug either way.
+- **Offline returns `null`, not a sentence.** This is the one exception to the
+  deterministic-offline-result convention, because a reply must answer whatever
+  was actually asked and nothing derived can do that. The stub returned "Thank
+  you for the update. Please let me know the next steps" — English regardless of
+  household language, unrelated to the question, saved into the thread as though
+  a model wrote it. The route reports 409 and the chat says so.
 
 ## Where credits go
 
@@ -303,7 +347,7 @@ analysis `flags`) and the facts the tenant actually supplied.
 | Listing falls short | **0** — the compromise summary is pure arithmetic |
 | Listing qualifies | 2 — `analyseListing` + `draftOutreachMessage` |
 | You press Activate | 2 — the same pair, released on demand |
-| You ask for a chat reply | 1 |
+| You ask for a chat reply | 1 — **0** with no household key; it reports offline |
 | You edit a listing | **0** — re-scoring is arithmetic; the review is carried over |
 
 `generateCompromiseSummary` **must not call a model**. It used to, on every
@@ -311,7 +355,8 @@ rejected listing, to reword a sentence already assembled in code — the majorit
 listings, paying for prose nobody asked for.
 
 `analyseListing` is the only review function, and it does **one** job: read the
-listing description. It returns `{ flags, unknowns, analysed }` and nothing else.
+listing description. It takes `(credentials, description)` and returns
+`{ flags, analysed }` — nothing else.
 
 - **Never ask it for a verdict, strengths, concerns or a summary.** Those are pure
   restatement of the score, so `deriveHighlights` in `mcda.ts` computes them for
@@ -323,9 +368,12 @@ listing description. It returns `{ flags, unknowns, analysed }` and nothing else
   the call exists.
 - **Every flag must quote the listing verbatim**, and a quote not actually present
   in the description is dropped in code before it reaches the user.
-- `unknowns` are drawn only from features weighted ≥4 that the user has **not**
-  rated, and anything outside that list is discarded. Asking about a feature they
-  already assessed is noise.
+- **There is no `unknowns` array and there should not be one again.** It reported
+  features weighted ≥4 that the description never mentioned, each with a question
+  for the landlord. But a description omitting something is not evidence of
+  anything — landlords leave out almost everything — so it fired on every listing
+  and asked about whatever the advert happened not to cover rather than what
+  mattered. The stated conditions are the part worth having.
 - No quotas. Empty arrays are correct. The version before this demanded exactly
   three cons, invented trade-offs for flats that had none, and asserted things
   about neighbourhoods and "comparable listings" from data this app never held.

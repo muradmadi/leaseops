@@ -72,22 +72,13 @@ describe('LLM Service & Security', () => {
     // that silence with "no elevator" or "unfurnished" — an invented fact about a
     // real property is exactly what the no-fabrication rule forbids.
     const { analyseListing } = await import('./llm');
-    const review = await analyseListing(
-      null,
-      'Estudio en Palacio',
-      1350,
-      'Estudio reformado en el centro.',
-      { title: 'Estudio en Palacio', unitMetrics: { floorSizeSqm: 34 }, location: { city: 'Madrid' } },
-      null,
-      { evaluations: [], result: { totalScore: 75, status: 'QUALIFIED' } }
-    );
+    const review = await analyseListing(null, 'Estudio reformado en el centro.');
     const text = JSON.stringify(review).toLowerCase();
     expect(text).not.toContain('elevator');
     expect(text).not.toContain('unfurnished');
     // Offline nothing was read, so nothing is claimed at all.
     expect(review.analysed).toBe(false);
     expect(review.flags).toEqual([]);
-    expect(review.unknowns).toEqual([]);
   });
 
   it('never asserts a guarantee or document the tenant did not provide', async () => {
@@ -139,50 +130,20 @@ describe('LLM Service & Security', () => {
 });
 
 describe('Listing analysis', () => {
-  const scores = {
-    evaluations: [
-      { featureId: 'naturalLight', name: 'Natural Light', weight: 5, rating: 5 },
-      { featureId: 'heating', name: 'Heating Quality', weight: 5, rating: 1 },
-    ],
-    result: {
-      totalScore: 55,
-      status: 'DISQUALIFIED',
-      exceedsBudget: false,
-      dealbreakerReasons: [],
-      criticalShortfalls: [{ name: 'Heating Quality', rating: 1, pointsLost: 20 }],
-    },
-  };
-
   it('restates only what was measured, and never pads to a quota', async () => {
     const { analyseListing } = await import('./llm');
-    const analysis = await analyseListing(
-      null,
-      'Estudio en Palacio',
-      1100,
-      'Estudio reformado de 34 m2.',
-      { unitMetrics: { floorSizeSqm: 34 }, location: { neighborhood: 'Palacio', city: 'Madrid' } },
-      { maxRent: 1500, idealRent: 1200 },
-      scores
-    );
+    const analysis = await analyseListing(null, 'Estudio reformado de 34 m2.');
 
-    // The model is no longer asked for strengths or concerns at all — those are
-    // derived from the score in code, so this call can only return what it read.
+    // The model is no longer asked for strengths, concerns or open questions —
+    // those are derived from the score in code or not wanted at all, so this call
+    // can only return the conditions it read.
     expect(Array.isArray(analysis.flags)).toBe(true);
-    expect(Array.isArray(analysis.unknowns)).toBe(true);
-    expect(Object.keys(analysis).sort()).toEqual(['analysed', 'flags', 'unknowns']);
+    expect(Object.keys(analysis).sort()).toEqual(['analysed', 'flags']);
   });
 
   it('claims nothing about the neighbourhood, which it cannot know', async () => {
     const { analyseListing } = await import('./llm');
-    const analysis = await analyseListing(
-      null,
-      'Estudio en Palacio',
-      1100,
-      'Estudio reformado.',
-      { location: { neighborhood: 'Palacio', city: 'Madrid' } },
-      { maxRent: 1500 },
-      scores
-    );
+    const analysis = await analyseListing(null, 'Estudio reformado.');
 
     // The old generator asserted "prime location ... excellent access to transport"
     // and "competitive relative to comparable listings" from no data whatsoever.
@@ -209,44 +170,6 @@ describe('Compromise summary cost', () => {
     });
     expect(res.sacrifices.some((s) => s.includes('over your 1500 ceiling'))).toBe(true);
     expect(res.summary).toContain('Cozy Studio');
-  });
-});
-
-describe('Analysis unknowns', () => {
-  it('does not ask about a feature the user has already rated', async () => {
-    const { analyseListing } = await import('./llm');
-    const analysis = await analyseListing(
-      null,
-      'Estudio centro',
-      1000,
-      'Estudio luminoso de 40 m2 en el centro.',
-      { unitMetrics: { floorSizeSqm: 40 } },
-      { maxRent: 1500 },
-      {
-        evaluations: [
-          // Assessed by the user — they have a view, so it is not an open question.
-          { featureId: 'naturalLight', name: 'Natural Light', weight: 5, rating: 5, notes: 'Rated by you.' },
-          // Never assessed — this is the one worth asking about.
-          {
-            featureId: 'heating',
-            name: 'Heating Quality',
-            weight: 5,
-            rating: 3,
-            notes: 'Not rated yet — assumed neutral pending viewing.',
-          },
-        ],
-        result: {
-          totalScore: 80,
-          status: 'QUALIFIED',
-          exceedsBudget: false,
-          dealbreakerReasons: [],
-          criticalShortfalls: [],
-        },
-      }
-    );
-
-    const asked = analysis.unknowns.map((u) => u.feature.toLowerCase()).join(' ');
-    expect(asked).not.toContain('natural light');
   });
 });
 
@@ -324,5 +247,121 @@ describe('Outreach robustness', () => {
       body: 'Hola...',
     });
     expect(parsed.language).toBe('Spanish');
+  });
+});
+
+/**
+ * The reply path had no tests at all, which is how its prompt drifted a long way
+ * from the outreach one without anything failing. These cover the part that can
+ * be asserted without a model: which turns become facts, and who is untrusted.
+ */
+describe('Chat reply transcript', () => {
+  const outreach = { sender: 'ai_suggestion', text: 'Buenas, nos interesa el piso.' };
+  const reply = { sender: 'landlord', text: '¿Cuando puede venir a verlo?' };
+
+  it('leaves a draft you never sent out of the record entirely', async () => {
+    const { buildChatTranscript } = await import('./llm');
+
+    // The bug this guards: a rejected draft containing "I can travel to Alicante"
+    // turned the next suggestion into exactly that promise, against a persona
+    // stating the tenant cannot travel. A proposal is not a statement.
+    const transcript = buildChatTranscript([
+      outreach,
+      reply,
+      { sender: 'ai_suggestion', text: 'Puedo desplazarme a Alicante.' },
+    ]);
+
+    expect(transcript).not.toContain('Puedo desplazarme a Alicante');
+    expect(transcript).toContain('Buenas, nos interesa el piso');
+  });
+
+  it('counts an unmarked legacy draft as sent once the landlord has replied to it', async () => {
+    const { countsAsSent } = await import('./llm');
+    // Rows written before the sent/draft buttons existed carry no marking at all.
+    expect(countsAsSent([outreach, reply], 0)).toBe(true);
+  });
+
+  it('honours an explicit draft marking over anything the thread implies', async () => {
+    const { countsAsSent } = await import('./llm');
+    // You never marked it sent, so it is not yours — even though a reply followed.
+    expect(countsAsSent([{ ...outreach, status: 'draft' }, reply], 0)).toBe(false);
+  });
+
+  it('treats a message you typed as yours, and lets you demote it to a draft', async () => {
+    const { countsAsSent } = await import('./llm');
+    const mine = { sender: 'user', text: 'What I wrote.' };
+    expect(countsAsSent([mine], 0)).toBe(true);
+    expect(countsAsSent([{ ...mine, status: 'draft' }], 0)).toBe(false);
+  });
+
+  it('counts a draft as sent when it is explicitly marked, with nothing after it', async () => {
+    const { countsAsSent } = await import('./llm');
+    expect(countsAsSent([{ ...outreach, status: 'sent' }], 0)).toBe(true);
+  });
+
+  it('treats a draft as superseded when you wrote your own message instead', async () => {
+    const { countsAsSent } = await import('./llm');
+    const history = [
+      outreach,
+      reply,
+      { sender: 'ai_suggestion', text: 'Suggested wording nobody used.' },
+      { sender: 'user', text: 'What I actually sent.' },
+      { sender: 'landlord', text: 'Entendido.' },
+    ];
+    expect(countsAsSent(history, 2)).toBe(false);
+    expect(countsAsSent(history, 0)).toBe(true);
+  });
+
+  it('leaves a pending draft out while it is still the last thing in the thread', async () => {
+    const { countsAsSent } = await import('./llm');
+    expect(countsAsSent([outreach, reply, { sender: 'ai_suggestion', text: 'Pending.' }], 2)).toBe(false);
+  });
+
+  it('marks only the landlord untrusted, never the tenant\'s own words', async () => {
+    const { buildChatTranscript } = await import('./llm');
+
+    // Wrapping the whole transcript told the model to treat the tenant's own
+    // sent messages as third-party data it must not act on, while the same
+    // prompt asked it to build the reply out of exactly those messages.
+    const transcript = buildChatTranscript([
+      { sender: 'user', text: 'MY OWN WORDS' },
+      { sender: 'landlord', text: 'LANDLORD WORDS' },
+    ]);
+
+    const untrusted = transcript.slice(
+      transcript.indexOf('<UNTRUSTED_LISTING_CONTENT>'),
+      transcript.indexOf('</UNTRUSTED_LISTING_CONTENT>')
+    );
+    expect(untrusted).toContain('LANDLORD WORDS');
+    expect(untrusted).not.toContain('MY OWN WORDS');
+    expect(transcript).toContain('YOU (sent)');
+  });
+
+  it('labels each turn by who said it, never by how it was produced', async () => {
+    const { buildChatTranscript } = await import('./llm');
+    const transcript = buildChatTranscript([outreach, reply]);
+
+    // `AI_SUGGESTION:` beside `LANDLORD:` and `USER:` left the model to work out
+    // which of three roles it was writing as.
+    expect(transcript).not.toContain('AI_SUGGESTION');
+    expect(transcript).toContain('OWNER:');
+  });
+});
+
+describe('Chat reply when offline', () => {
+  it('reports it has nothing to say rather than inventing filler', async () => {
+    const { suggestChatReply } = await import('./llm');
+
+    // The old stub returned "Thank you for the update. Please let me know the
+    // next steps" — English regardless of household language, unrelated to what
+    // was asked, and saved into the thread as though a model had written it.
+    const res = await suggestChatReply(
+      null,
+      'Piso en Ruzafa',
+      [{ sender: 'landlord', text: '¿Cuanto gana al mes?' }],
+      { targetLanguage: 'Spanish', professionAndIncome: 'Enfermero' }
+    );
+
+    expect(res).toBeNull();
   });
 });

@@ -4,7 +4,7 @@
  */
 import { z } from 'zod';
 import { AiReviewSchema, type AiReview } from '@leaseops/db';
-import { completeJson, untrustedBlock, type LlmConfig } from './anthropic';
+import { completeJson, untrustedBlock, untrustedSpan, UNTRUSTED_NOTICE, type LlmConfig } from './anthropic';
 
 /**
  * Whose key pays for this call, or `null` for offline.
@@ -135,6 +135,35 @@ function buildStatedFacts(persona: TenantPersona): string {
     .join('\n');
 }
 
+/** How many persona fields the tenant actually filled in. */
+function countStatedFacts(persona: TenantPersona): number {
+  return [
+    persona.professionAndIncome, persona.contractType, persona.financialGuarantees,
+    persona.documentsReady, persona.householdComposition, persona.pets,
+    persona.moveInTimeline, persona.intendedLeaseLength, persona.viewingAvailability,
+    persona.additionalNotes,
+  ].filter((v) => v && v.trim().length > 0).length;
+}
+
+/**
+ * Below this, the owner's requirements are withheld from the prompt entirely.
+ *
+ * Given a requirements list and a near-empty persona, the model reliably answers
+ * the list point by point and invents a tenant who satisfies it. Removing the
+ * list removes the material it was inventing from, which prose could not. Shared
+ * by outreach and replies so the two cannot drift apart on it.
+ */
+const MIN_FACTS_FOR_REQUIREMENTS = 4;
+
+/** The listing's stated demands, or none when the tenant has too little to answer them. */
+function resolveRequirements(
+  persona: TenantPersona,
+  analysis?: { flags?: Array<{ issue: string; quote: string }> }
+): string[] {
+  if (countStatedFacts(persona) < MIN_FACTS_FOR_REQUIREMENTS) return [];
+  return (analysis?.flags || []).map((f) => f.issue);
+}
+
 const OUTREACH_RULES = `You are the prospective tenant, writing the first message about a flat you want to see. You are not a copywriter and this is not an advertisement. Write the way a competent adult writes a short practical message.
 
 WHY THIS IS HARD
@@ -181,35 +210,15 @@ export async function draftOutreachMessage(
   listingTitle: string,
   scrapedDescription: string,
   persona: TenantPersona,
-  analysis?: { flags?: Array<{ issue: string; quote: string }>; unknowns?: Array<{ feature: string; ask: string }> }
+  analysis?: { flags?: Array<{ issue: string; quote: string }> }
 ): Promise<OutreachMessage> {
   const language = persona.targetLanguage || 'English';
 
-  const statedFactCount = [
-    persona.professionAndIncome, persona.contractType, persona.financialGuarantees,
-    persona.documentsReady, persona.householdComposition, persona.pets,
-    persona.moveInTimeline, persona.intendedLeaseLength, persona.viewingAvailability,
-    persona.additionalNotes,
-  ].filter((v) => v && v.trim().length > 0).length;
-
   /**
-   * The owner's requirements are withheld when the tenant has stated too little
-   * to answer them.
-   *
-   * Three separate prompt rules failed to stop this: given a requirements list
-   * and a near-empty persona, the model reliably answers the list point by point
-   * and invents a tenant who satisfies it — a permanent contract, income over
-   * three times the rent, documents, no pets, none of it supplied. Removing the
-   * list removes the material it was inventing from, which prose could not.
-   *
    * A tenant with two facts has nothing to negotiate with anyway; their message
-   * is an introduction and a request to view.
+   * is an introduction and a request to view. See `resolveRequirements`.
    */
-  const MIN_FACTS_FOR_REQUIREMENTS = 4;
-  const requirements =
-    statedFactCount >= MIN_FACTS_FOR_REQUIREMENTS
-      ? (analysis?.flags || []).map((f) => f.issue)
-      : [];
+  const requirements = resolveRequirements(persona, analysis);
 
   const statedFacts = buildStatedFacts(persona);
 
@@ -264,28 +273,56 @@ Write the message.`,
 
   const validated = OutreachMessageSchema.parse({ ...result, language });
 
-  // The prompt asks for the sign-off and the model sometimes drops it, leaving a
-  // message that ends mid-air. Enforced here rather than hoped for — but only
-  // ever with the real name, never an invented one.
-  const signOff = persona.signOffName?.trim();
-  if (signOff && !validated.body.includes(signOff)) {
-    validated.body = `${validated.body.trimEnd()}\n\n${signOff}`;
-  }
+  validated.body = withSignOff(validated.body, persona);
 
   return validated;
 }
 
-const CHAT_REPLY_RULES = `You are the tenant, replying to a landlord in an ongoing conversation about a flat you want.
+/**
+ * Appends the household sign-off when the model dropped it.
+ *
+ * The prompt asks for it and the model sometimes omits it anyway, leaving a
+ * message that ends mid-air. Enforced here rather than hoped for — but only ever
+ * with the real name, never an invented one, so a household with no usable name
+ * still ends without a signature.
+ */
+function withSignOff(body: string, persona: TenantPersona): string {
+  const signOff = persona.signOffName?.trim();
+  if (!signOff || body.includes(signOff)) return body;
+  return `${body.trimEnd()}\n\n${signOff}`;
+}
 
-Write about each person in the grammatical form given under HOW TO WRITE ABOUT EACH PERSON. Never infer it from a name or a profession. Where someone avoids grammatical gender or is not listed, rephrase so the question does not arise rather than defaulting to the masculine.
+const CHAT_REPLY_RULES = `You are the prospective tenant, replying to the owner in a conversation that is already under way. You are not a copywriter and this is not an advertisement. Write the way a competent adult writes a short practical reply.
 
-Answer what was actually asked, in order, and stop. This is a reply, not a fresh pitch — do not reintroduce yourself, do not restate what you already said earlier in the thread, and do not close with a summary of your own suitability.
+WHY THIS IS HARD
+The owner has already decided you are worth answering. They are now screening a shortlist, and every reply either moves you toward a viewing or quietly drops you off it. What loses at this stage is vagueness: an answer that dodges the question they asked, a promise softer than the one they wanted, or a wall of text repeating the pitch they already read. A short reply that answers exactly what was asked, states plainly what you cannot yet answer, and leaves a concrete next step beats a longer one every time.
 
-Every fact you state must come from the tenant facts given below or from the tenant's own earlier messages in this thread. If the landlord asks for something the facts do not cover — an amount, a document, a date, an employment detail — say plainly what you can do and leave the rest for them to confirm. Never invent a figure, a document, a contract type or a date, and never let a question about a subject become an answer implying you have it. If the tenant facts are silent on it, you do not have it.
-
-Where you can cover part of what is asked, name the exact part the facts support and offer to settle the remainder directly. Never imply the whole request is covered.
-
-Tone: plain, direct, unhurried. No flattery about the property, no eagerness, no apologising. Under 90 words. Reply in the LANGUAGE given below.`;
+HOW TO WRITE IT
+1. Answer what was actually asked, in the order it was asked, and stop. This is a reply, not a fresh pitch — do not reintroduce yourself, do not open with thanks for their message, and do not close with a summary of your own suitability.
+1a. Do not repeat what you already sent. The owner has the earlier messages in front of them, and restating a fact you have already given is the single thing that makes a reply read as machine-written. Repeat a fact only where the owner has asked for it again or asked for it in a more precise form — then give the sharper version, not the same sentence.
+1b. Where a question has already been answered in the thread and the owner is pressing for more precision, say what is genuinely new and acknowledge the rest in a few words rather than restating it in full.
+2. Where the owner names a requirement and the tenant facts show it is met, say so plainly. Respond in your own words; do not quote their message back at them.
+2a. Where a requirement is not met, state the true position plainly in a few words, then give the strongest relevant fact the tenant does have. Do not apologise, do not argue with the requirement, and do not pad it with reassurance. Hiding it wastes a viewing and collapses at signing.
+2b. Where the tenant covers PART of what is asked — the owner wants a bank guarantee and the facts state a written one with statements — name precisely what the facts say can be put up now, then offer to settle the remainder with the owner directly. Concrete first, willingness second. A bare "I'm flexible" is worthless: it commits to nothing and every other applicant writes it. Never imply the full requirement is already covered.
+3. Use only the stated tenant facts and the tenant's own SENT messages in the thread. Invent nothing: no income, no contract, no references, no documents, no dates that are not there.
+3-i. Absence is not an invitation. If the owner asks about a subject the tenant facts do not cover — a payslip, a net figure, a guarantor, a deposit, a date — you do not have it. Say what you can actually do and leave the rest for them to confirm. A question about a subject must never become an answer implying you have it, and never reuse a number or an arrangement that appears anywhere in these instructions.
+3-ii. A demand is not met by promising you will meet it. Where the owner insists on something the tenant facts do not support — being somewhere in person, a date, a form of guarantee, a document — you cannot invent the capability just because they asked firmly. Availability, travel and attendance are facts like any other. State the true position in a few words, and where the tenant facts name an alternative — someone who can attend in their place, a video call, a document that answers the same worry — offer that and let the owner decide. Conceding on paper to something the tenant has said they cannot do is the worst outcome available: it wastes the viewing and is found out at the worst moment.
+3-iii. A number the tenant has not stated cannot be computed, estimated or converted. If they gave a gross annual figure and the owner asks for a net monthly one, give the figure you have, name it for what it is, and offer the document that proves it. Never do the arithmetic yourself.
+3a. The profession, contract and income belong to the person writing, and to nobody else. If the household has other adults, never attribute a job, a salary or a contract to them — keep employment details in the first person singular.
+3b. State offers exactly as given. If the tenant can provide one thing OR another, write it as a choice; never merge them into both, never upgrade an offer, and never restate an amount as something it is not.
+3b-i. Never offer to pay the first month's rent as though it were a concession. Every tenant pays it, and dressing up an ordinary obligation makes the rest of the reply look thinner.
+3c. A condition attached to a fact travels with the fact, always. If income, hours or a contract depend on something pending — a visa, a probation period, a start date — say so in the same breath. A future salary quoted without its condition reads as invention, and the condition usually explains the number and makes it credible.
+3d. Where the tenant's own wording is ambiguous, use their words rather than resolving it into a legal term. Never upgrade "permanent contract, for 1 year" into "contrato indefinido", "fijo" or any equivalent — those are terms an owner will check against the document, and guessing wrong is caught at exactly the moment trust matters.
+3e. Facts about the tenant's legal right to work or reside — visa status, permits in process — are material and must never be dropped for brevity.
+3f. Write about each person in the grammatical form given under HOW TO WRITE ABOUT EACH PERSON. Spanish, German and French force a choice on almost every self-description ('vivo solo' / 'vivo sola', 'enfermero' / 'enfermera'), and the correct form is a fact about the sender, not a style preference. Never infer it from a first name, and never infer it from the profession — a nurse is not therefore female and an architect is not therefore male. Check the listed form for each person immediately before writing any word that inflects, and apply it to the person, not to whatever noun happens to be nearest. Where a person is listed as avoiding grammatical gender, or is not listed at all, rephrase so the question does not arise rather than falling back to the masculine default.
+4. No compliments about the property, the building or the area. Do not write that it looks lovely, ideal, perfect or charming, and do not tell them how much you want it.
+5. No filler. The reply ends on its last real point or the sign-off — nothing after it. Cut every variant of "thank you for your reply", "I look forward to hearing from you", "I await your response", "I remain at your disposal". In Spanish this specifically means never writing "quedo a la espera de su respuesta", "quedamos a la espera", "quedo a su disposición" or "gracias de antemano".
+6. Do not describe yourself with adjectives like ideal, perfect, responsible, reliable or serious. State facts and let them speak. Concrete behaviour is a fact and belongs in the reply — "no parties or guests" and "we both work from home" tell an owner something checkable; "we are quiet and respectful" tells them nothing.
+6a. Keep the specifics that make a guarantee credible. "My parents will act as guarantors and can provide their bank statements" is materially stronger than "I can provide bank statements", and the difference is exactly what the owner is assessing.
+7. Where the exchange is ready for it, close with one concrete next step — a viewing, a document you will send, a time you will confirm by. One only, and only if it follows from what was asked. If the owner asked a straight question, answering it is enough; do not bolt a next step onto every message.
+8. Under 90 words for a single question, and never more than 130 even when the owner asked several. Shorter is better. No bullet lists, no headings.
+9. Sign off with exactly the SIGN-OFF given below, on its own line. If it says NONE, end without a name and never invent one.
+10. Write in the LANGUAGE given below, in the register a native speaker would actually use with an owner they are negotiating with. Hold one level of formality throughout, and hold the SAME level the tenant used in their earlier sent messages — do not switch between formal and informal address within a message or across the thread.`;
 
 const CHAT_REPLY_SCHEMA = {
   type: 'object',
@@ -294,41 +331,144 @@ const CHAT_REPLY_SCHEMA = {
   properties: { text: { type: 'string' } },
 } as const;
 
+/** One stored message, reduced to what the reply prompt needs. */
+export interface ChatTurn {
+  sender: string;
+  text: string;
+  /**
+   * `'sent'` or `'draft'`, set by hand in the chat. `'ready'` is the old default
+   * and means nobody ever said — see `countsAsSent`.
+   */
+  status?: string | null;
+}
+
+/**
+ * Whether a message counts as something the tenant actually said to the owner.
+ *
+ * A generated suggestion is a proposal, and most are never used. Treating one as
+ * a stated fact is how a discarded draft containing "I can travel to Alicante"
+ * turned the next suggestion into exactly that promise, against a persona saying
+ * the opposite.
+ *
+ * Marking settles it, and rejecting a bad suggestion deletes it outright, so a
+ * message that is still here is either explicitly sent or explicitly pending.
+ * Rows written before those buttons existed carry `'ready'` and nobody ever said,
+ * so they are resolved by kind:
+ *
+ *   - a message the tenant typed is theirs by definition → sent
+ *   - an AI draft falls back to the thread's own shape:
+ *       a LANDLORD turn follows it   → they were replying to something, so it went
+ *       a USER turn follows it first → the tenant wrote their own words instead
+ *       nothing follows it            → still sitting on screen unused
+ */
+export function countsAsSent(history: ChatTurn[], index: number): boolean {
+  const turn = history[index];
+  if (!turn) return false;
+  if (turn.status === 'sent') return true;
+  if (turn.status === 'draft') return false;
+
+  if (turn.sender === 'user') return true;
+
+  for (let i = index + 1; i < history.length; i++) {
+    const sender = history[i].sender;
+    if (sender === 'landlord') return true;
+    if (sender === 'user') return false;
+  }
+  return false;
+}
+
+/**
+ * The conversation as the model should see it: who said what, and which parts
+ * are the owner's words rather than ours.
+ *
+ * Two things this fixes. The old format emitted `AI_SUGGESTION:` beside
+ * `LANDLORD:` and `USER:` and left the model to work out which of the three it
+ * was — so unsent drafts read as the tenant's own history. And it wrapped the
+ * whole transcript in one untrusted block, marking the tenant's own messages as
+ * third-party data the model must not act on, while the same prompt asked it to
+ * build the reply out of exactly those messages. Only the owner is untrusted.
+ */
+export function buildChatTranscript(history: ChatTurn[]): string {
+  const lines = history
+    .map((turn, i) => {
+      // The owner's own words are the one untrusted thing in the thread.
+      if (turn.sender === 'landlord') return `OWNER:\n${untrustedSpan(turn.text)}`;
+
+      // Anything else only enters the record once it actually went out.
+      return countsAsSent(history, i) ? `YOU (sent):\n${turn.text.trim()}` : null;
+    })
+    .filter((line): line is string => line !== null);
+
+  return lines.join('\n\n');
+}
+
+export interface ChatReplyContext {
+  /** The listing text, so a question about the flat can be answered from it. */
+  description?: string;
+  /** `extractedData.aiReview` — its `flags` are what this listing demands. */
+  analysis?: { flags?: Array<{ issue: string; quote: string }> };
+  /** `apartment.featureScores` — measured shortfalls, never invented ones. */
+  featureScores?: { result?: { criticalShortfalls?: Array<{ name: string; rating: number }> } };
+}
+
+/**
+ * The tenant's next reply, or `null` when the household has no key.
+ *
+ * `null` rather than a canned sentence: a reply has to answer whatever the owner
+ * actually asked, and nothing deterministic can do that. The offline stub used to
+ * return "Thank you for the update. Please let me know the next steps" — English
+ * regardless of the household language, unrelated to the question, and saved into
+ * the thread as though a model had written it. That is the invented filler the
+ * no-fabrication rule exists to prevent, so the route reports offline instead.
+ */
 export async function suggestChatReply(
   credentials: LlmCredentials,
   listingTitle: string,
-  chatHistory: { sender: string; text: string }[],
+  chatHistory: ChatTurn[],
   persona: TenantPersona,
-  _aiReview?: any,
-  _featureScores?: any
-): Promise<{ text: string }> {
+  context?: ChatReplyContext
+): Promise<{ text: string } | null> {
   const language = persona.targetLanguage || 'English';
-  
-  const formattedHistory = chatHistory.map(m => `${m.sender.toUpperCase()}: ${m.text}`).join('\n\n');
 
+  const transcript = buildChatTranscript(chatHistory);
   const statedFacts = buildStatedFacts(persona);
+  const requirements = resolveRequirements(persona, context?.analysis);
 
-  if (!credentials) {
-    return {
-      text: 'Thank you for the update. Please let me know the next steps and I will arrange things from my side.',
-    };
-  }
+  const requirementsBlock = requirements.length
+    ? `WHAT THIS LISTING ASKS FOR\nThis is what the OWNER wants, taken from their advert. It is not a form to fill in and not a description of the tenant. Answer a line only where the tenant facts below independently satisfy it, and only where this exchange has actually raised it.\n${requirements.map((r) => `- ${r}`).join('\n')}`
+    : `WHAT THIS LISTING ASKS FOR\nNot provided. Answer from the tenant facts below and the conversation.`;
+
+  const shortfalls = (context?.featureScores?.result?.criticalShortfalls || [])
+    .map((s) => `- ${s.name}: rated ${s.rating}/5`)
+    .join('\n');
+
+  const shortfallBlock = shortfalls
+    ? `WHERE THIS FLAT FALLS SHORT FOR THE TENANT\nMeasured from the tenant's own ratings. This is context so you do not oversell how well the flat suits them. Never volunteer it. Use it only if the owner asks why they are hesitating, or if the tenant is negotiating on rent or terms — and then restate only what is listed here.\n${shortfalls}`
+    : '';
+
+  if (!credentials) return null;
 
   const result = await completeJson<{ text: string }>({
     config: credentials,
     system: CHAT_REPLY_RULES,
-    user: `TARGET PROPERTY: ${listingTitle}
+    user: `${context?.description ? `THE LISTING\n${untrustedBlock(context.description)}\n\n` : ''}TARGET PROPERTY: ${listingTitle}
 LANGUAGE: ${language}
 SIGN-OFF: ${persona.signOffName?.trim() || 'NONE'}
 
-HOW TO WRITE ABOUT EACH PERSON
-${persona.writingForms?.trim() || 'Not stated. Avoid wording that requires grammatical gender.'}
-
+${requirementsBlock}
+${shortfallBlock ? `\n${shortfallBlock}\n` : ''}
 WHAT THE TENANT HAS ACTUALLY STATED
 ${statedFacts || '- Nothing beyond wanting to view the property.'}
 
 CONVERSATION SO FAR
-${untrustedBlock(formattedHistory)}
+${UNTRUSTED_NOTICE}
+Turns marked "YOU (sent)" are messages the tenant has already sent. Treat those as their own words and as facts they have committed to. Drafts they did not send are not in this transcript at all.
+
+${transcript || '- No messages yet.'}
+
+
+HOW TO WRITE ABOUT EACH PERSON — this overrides any assumption the facts above invite
+${persona.writingForms?.trim() || 'Not stated. Avoid wording that requires grammatical gender.'}
 
 Write the tenant's next reply.`,
     schema: CHAT_REPLY_SCHEMA,
@@ -337,7 +477,11 @@ Write the tenant's next reply.`,
   });
 
   if (!result?.text?.trim()) throw new Error('Failed to generate chat reply');
-  return { text: result.text.trim() };
+
+  // Same enforcement as the outreach draft: the prompt asks for the sign-off and
+  // the model still drops it about a third of the time, which is why three runs
+  // of the old version ended three different ways.
+  return { text: withSignOff(result.text.trim(), persona) };
 }
 
 export interface CompromiseContext {
@@ -446,26 +590,23 @@ export async function generateCompromiseSummary(
  * so the cached prefix is byte-identical on every request — any interpolation
  * here would invalidate the cache for every listing.
  */
-const ANALYSIS_RULES = `You read one rental listing description on behalf of a specific tenant and report two things. You do not evaluate, score, summarise or advise — other parts of the system already do that from measured data.
+const ANALYSIS_RULES = `You read one rental listing description on behalf of a specific tenant and report one thing: the conditions it states. You do not evaluate, score, summarise or advise — other parts of the system already do that from measured data.
 
 ABSOLUTE RULE
 You know nothing about this city, neighbourhood, local rents, transport links or comparable properties. Never characterise an area and never compare this listing to any other. Everything you output must come from the listing text itself.
 
-TASK 1 — flags
+FLAGS
 Conditions stated in the listing that a feature checklist cannot represent and that affect whether this tenant can or should take the flat. Typically: minimum stay, deposit and guarantee demands, agency or admin fees, tenant restrictions (employment type, pets, sharing, students), residency or registration conditions, excluded charges such as community fees or utilities, who the landlord is, anything else unusual or restrictive.
 Each flag needs "quote" copied EXACTLY, character for character, from the description. Do not translate, trim or tidy the quote. If you cannot copy an exact quote, omit the flag.
 State the issue in English even when the quote is not.
 
-TASK 2 — unknowns
-From the list of things the tenant cares about and has NOT yet assessed, report only those the description genuinely never addresses, each with one short, specific question to put to the landlord. If the description does address it, leave it out. Never report a feature that is not on that list.
-
-Both arrays may be empty, and empty is the correct answer when there is nothing to report. Never pad, never invent, never repeat a point.`;
+The array may be empty, and empty is the correct answer when the listing states no conditions. Never pad, never invent, never repeat a point.`;
 
 /** Structured-output schema. Every object needs additionalProperties:false. */
 const ANALYSIS_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['flags', 'unknowns'],
+  required: ['flags'],
   properties: {
     flags: {
       type: 'array',
@@ -476,52 +617,29 @@ const ANALYSIS_SCHEMA = {
         properties: { issue: { type: 'string' }, quote: { type: 'string' } },
       },
     },
-    unknowns: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['feature', 'ask'],
-        properties: { feature: { type: 'string' }, ask: { type: 'string' } },
-      },
-    },
   },
 } as const;
 
+/**
+ * Reads the listing text and returns the conditions it states.
+ *
+ * Takes the description and nothing else. It used to take the title, price,
+ * extracted data, profile and feature scores as well; only the scores were ever
+ * read, and only to build the `unknowns` list that no longer exists.
+ */
 export async function analyseListing(
   credentials: LlmCredentials,
-  listingTitle: string,
-  price: number,
-  description: string,
-  extractedData: any,
-  userProfile?: any,
-  featureScores?: any
+  description: string
 ): Promise<AiReview> {
-  const evaluations: any[] = featureScores?.evaluations || [];
-
-  // Features worth asking about: weighted highly AND not yet assessed by the user.
-  // A feature they already rated is not an open question — they have looked at it.
-  const openFeatureNames = evaluations
-    .filter(
-      (e) =>
-        e.weight >= 4 &&
-        !e.featureId.startsWith('__') &&
-        !e.notes?.toLowerCase().includes('rated by you')
-    )
-    .map((e) => e.name);
-
   /** Nothing was read, so nothing is claimed. */
-  const unread = (): AiReview => AiReviewSchema.parse({ flags: [], unknowns: [], analysed: false });
+  const unread = (): AiReview => AiReviewSchema.parse({ flags: [], analysed: false });
 
   if (!credentials || !description.trim()) return unread();
 
-  const analysis = await completeJson<{ flags?: any[]; unknowns?: any[] }>({
+  const analysis = await completeJson<{ flags?: any[] }>({
     config: credentials,
     system: ANALYSIS_RULES,
     user: `${untrustedBlock(description)}
-
-THINGS THIS TENANT CARES ABOUT AND HAS NOT YET ASSESSED
-${openFeatureNames.length ? openFeatureNames.join(', ') : '(none)'}
 
 Read the listing.`,
     schema: ANALYSIS_SCHEMA,
@@ -548,11 +666,6 @@ Read the listing.`,
     if (!present) console.warn(`[LLM] Dropped a flag whose quote is absent from the listing: "${flag.quote}"`);
     return present;
   });
-
-  // The model is only offered features the user has not assessed, but it can still
-  // echo something outside that list. Anything it invents is discarded.
-  const allowed = new Set(openFeatureNames.map((n) => n.toLowerCase()));
-  parsed.unknowns = parsed.unknowns.filter((u) => allowed.has(u.feature?.trim().toLowerCase()));
 
   return parsed;
 }

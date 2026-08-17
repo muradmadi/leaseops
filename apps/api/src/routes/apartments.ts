@@ -229,16 +229,9 @@ app.post('/:id/ai-review', async (c) => {
     return c.json(ext.aiReview, 200);
   }
 
-  const userProfile = await findProfileByHouseholdId(c.get('householdId'));
-
   const aiReview = await analyseListing(
     await resolveLlmConfig(c.get('householdId')),
-    apartment.title || ext.title || 'Property',
-    apartment.price || ext.price?.amount || 0,
-    ext.description || '',
-    ext,
-    userProfile,
-    apartment.featureScores
+    ext.description || ''
   );
 
   const updatedExt = { ...ext, aiReview };
@@ -653,8 +646,10 @@ app.post('/:id/messages/init', async (c) => {
     id: crypto.randomUUID(),
     apartmentId: id,
     sender: 'ai_suggestion',
+    // A proposal until you mark it sent. Nothing here is attributed to you before
+    // then, and rejecting it removes it entirely.
+    status: 'draft',
     text: outreach.body,
-    status: 'ready',
     metadata: { generated: true, kind: 'outreach', language: outreach.language },
     createdAt: now,
     updatedAt: now,
@@ -670,15 +665,27 @@ app.post('/:id/messages/init', async (c) => {
 const createMessageSchema = z.object({
   sender: z.enum(['landlord', 'ai_suggestion', 'user']),
   text: z.string().min(1),
+  status: z.enum(['draft', 'sent']).optional(),
   metadata: z.any().optional(),
 });
+
+/**
+ * What a newly logged message means before anyone touches it.
+ *
+ * A message you typed is one you wrote, so it is sent unless you say otherwise.
+ * An AI draft is a proposal until you mark it. The landlord's own messages have
+ * no such state — they were sent, by them, or they would not be here.
+ */
+function defaultStatus(sender: string): string {
+  return sender === 'ai_suggestion' ? 'draft' : 'sent';
+}
 
 app.post(
   '/:id/messages',
   zValidator('json', createMessageSchema),
   async (c) => {
     const id = c.req.param('id');
-    const { sender, text, metadata } = c.req.valid('json');
+    const { sender, text, status, metadata } = c.req.valid('json');
 
     const apartment = await findApartmentForHousehold(id, c.get('householdId'));
     if (!apartment) {
@@ -691,7 +698,7 @@ app.post(
       apartmentId: id,
       sender,
       text,
-      status: 'ready',
+      status: status ?? defaultStatus(sender),
       metadata,
       createdAt: now,
       updatedAt: now,
@@ -705,18 +712,32 @@ app.post(
  * PATCH /api/apartments/:id/messages/:messageId
  * Updates the text of a specific message.
  */
+const updateMessageSchema = z
+  .object({
+    text: z.string().min(1).optional(),
+    /**
+     * `'sent'` marks an AI draft as actually used. Only these count as the
+     * tenant's own words when the next reply is drafted, which is what stops a
+     * rejected suggestion becoming a promise to the owner.
+     */
+    status: z.enum(['draft', 'sent']).optional(),
+  })
+  .refine((v) => v.text !== undefined || v.status !== undefined, {
+    message: 'Provide text, status, or both',
+  });
+
 app.patch(
   '/:id/messages/:messageId',
-  zValidator('json', z.object({ text: z.string().min(1) })),
+  zValidator('json', updateMessageSchema),
   async (c) => {
     const id = c.req.param('id');
     const messageId = c.req.param('messageId');
-    const { text } = c.req.valid('json');
+    const patch = c.req.valid('json');
 
     const apartment = await findApartmentForHousehold(id, c.get('householdId'));
     if (!apartment) return c.json({ error: 'Not found' }, 404);
 
-    const updated = await updateMessage(messageId, text);
+    const updated = await updateMessage(messageId, patch);
     if (!updated) return c.json({ error: 'Message not found' }, 404);
 
     return c.json(updated, 200);
@@ -753,29 +774,57 @@ app.post('/:id/messages/suggest', async (c) => {
   }
 
   const messages = await findMessagesByApartmentId(id);
-  
+
+  if (messages.length === 0) {
+    return c.json(
+      { message: 'Nothing to reply to yet. Draft the outreach message first.', statusCode: 400 },
+      400
+    );
+  }
+
   const userProfile = await findProfileByHouseholdId(c.get('householdId'));
-  
+
   const persona = await resolveHouseholdPersona(c.get('householdId'), userProfile);
 
   const ext = (apartment.extractedData || {}) as any;
-  const chatHistory = messages.map(m => ({ sender: m.sender, text: m.text }));
+
+  // `status` rides along: it is what tells the draft the tenant actually sent
+  // apart from the ones still sitting on screen.
+  const chatHistory = messages.map((m) => ({ sender: m.sender, text: m.text, status: m.status }));
+
   const suggestion = await suggestChatReply(
     await resolveLlmConfig(c.get('householdId')),
     apartment.title,
     chatHistory,
     persona,
-    ext.aiReview,
-    apartment.featureScores
+    {
+      description: ext.description || '',
+      analysis: ext.aiReview,
+      featureScores: apartment.featureScores as any,
+    }
   );
+
+  // Offline is a normal state, not an error — but a reply has to answer what was
+  // actually asked, and there is no deterministic version of that. Saying so
+  // beats saving invented filler into the thread as though a model wrote it.
+  if (!suggestion) {
+    return c.json(
+      {
+        message:
+          'No Anthropic key set for this household, so there is no suggestion to make. Add one in Settings → AI & billing, or write the reply yourself.',
+        statusCode: 409,
+      },
+      409
+    );
+  }
 
   const now = new Date();
   const newMessage = await createMessage({
     id: crypto.randomUUID(),
     apartmentId: id,
     sender: 'ai_suggestion',
+    status: 'draft',
     text: suggestion.text,
-    status: 'ready',
     metadata: { generated: true, kind: 'reply', personaTuned: true },
     createdAt: now,
     updatedAt: now,

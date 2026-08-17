@@ -87,22 +87,14 @@ export async function resolveHouseholdPersona(
  * apartment row rather than passed in, so background enrichment can never charge
  * the wrong household's key.
  */
-export async function ensureAiReview(
-  apartment: Apartment,
-  userProfile?: UserProfile | null
-): Promise<any | undefined> {
+export async function ensureAiReview(apartment: Apartment): Promise<any | undefined> {
   const ext = (apartment.extractedData || {}) as any;
   if (ext.aiReview) return ext.aiReview;
 
   try {
     const aiReview = await analyseListing(
       await resolveLlmConfig(apartment.householdId),
-      apartment.title || ext.title || 'Property',
-      apartment.price || ext.price?.amount || 0,
-      ext.description || '',
-      ext,
-      userProfile,
-      apartment.featureScores
+      ext.description || ''
     );
     await updateApartmentEnrichment(apartment.id, { extractedData: { ...ext, aiReview } });
     console.log(`[Qualification] Generated AI review for qualified lead ${apartment.id}`);
@@ -179,7 +171,7 @@ export async function enrichQualifiedLead(
   // decided to chase it anyway, so the AI spend the pipeline withheld is released.
   if (requireQualified && apartment.status !== 'QUALIFIED') return;
 
-  const aiReview = await ensureAiReview(apartment, userProfile);
+  const aiReview = await ensureAiReview(apartment);
   const fresh = (await findApartmentByIdUnscoped(apartmentId)) || apartment;
   await maybeAutoDraftOutreach(fresh, userProfile, aiReview);
 
