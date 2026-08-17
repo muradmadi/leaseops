@@ -3,7 +3,7 @@
  * Enforces Prompt Injection Defense (<UNTRUSTED_LISTING_CONTENT> boundaries) and Structured JSON Output parsing.
  */
 import { z } from 'zod';
-import { AiReviewSchema, type AiReview } from '@leaseops/db';
+import { AiReviewSchema, countsAsSent, type AiReview, type ThreadTurn } from '@leaseops/db';
 import { completeJson, untrustedBlock, untrustedSpan, UNTRUSTED_NOTICE, type LlmConfig } from './anthropic';
 
 /**
@@ -332,14 +332,8 @@ const CHAT_REPLY_SCHEMA = {
 } as const;
 
 /** One stored message, reduced to what the reply prompt needs. */
-export interface ChatTurn {
-  sender: string;
+export interface ChatTurn extends ThreadTurn {
   text: string;
-  /**
-   * `'sent'` or `'draft'`, set by hand in the chat. `'ready'` is the old default
-   * and means nobody ever said — see `countsAsSent`.
-   */
-  status?: string | null;
 }
 
 /**
@@ -352,30 +346,14 @@ export interface ChatTurn {
  *
  * Marking settles it, and rejecting a bad suggestion deletes it outright, so a
  * message that is still here is either explicitly sent or explicitly pending.
- * Rows written before those buttons existed carry `'ready'` and nobody ever said,
- * so they are resolved by kind:
  *
- *   - a message the tenant typed is theirs by definition → sent
- *   - an AI draft falls back to the thread's own shape:
- *       a LANDLORD turn follows it   → they were replying to something, so it went
- *       a USER turn follows it first → the tenant wrote their own words instead
- *       nothing follows it            → still sitting on screen unused
+ * The implementation moved to `@leaseops/db` once the thread readout on the
+ * dashboard needed the same answer. Re-exported here because this is where the
+ * question is asked most, and because it is what `buildChatTranscript` below is
+ * built on — the transcript and the readout disagreeing about what was sent
+ * would be a real bug, so there is one definition.
  */
-export function countsAsSent(history: ChatTurn[], index: number): boolean {
-  const turn = history[index];
-  if (!turn) return false;
-  if (turn.status === 'sent') return true;
-  if (turn.status === 'draft') return false;
-
-  if (turn.sender === 'user') return true;
-
-  for (let i = index + 1; i < history.length; i++) {
-    const sender = history[i].sender;
-    if (sender === 'landlord') return true;
-    if (sender === 'user') return false;
-  }
-  return false;
-}
+export { countsAsSent };
 
 /**
  * The conversation as the model should see it: who said what, and which parts

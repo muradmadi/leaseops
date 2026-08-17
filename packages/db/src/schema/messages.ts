@@ -13,6 +13,21 @@ export const messages = sqliteTable(
     text: text('text').notNull(),
     status: text('status').notNull().default('ready'),
     metadata: text('metadata', { mode: 'json' }), // For translated, originalLanguage, personaTuned, etc.
+    /**
+     * When this message was actually said, stated by the person who logged it.
+     *
+     * Deliberately not `createdAt`. That column is when the row was written,
+     * which is a fact about the record and not about the conversation: you send
+     * a message from your own mail client and mark it here a day later, and
+     * `createdAt` would claim you wrote it just now. The chat used to render
+     * exactly that and it was removed for being wrong.
+     *
+     * Nullable, and nothing derives it. A message with no time is a message
+     * nobody has dated, and every readout treats that as unknown rather than
+     * falling back to `createdAt` — the fallback is the bug this column exists
+     * to fix.
+     */
+    sentAt: integer('sent_at', { mode: 'timestamp_ms' }),
     createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   },

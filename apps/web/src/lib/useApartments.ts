@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './api';
-import type { Apartment, PipelineStage } from '@leaseops/db';
+import type { Apartment, ApartmentWithThread, PipelineStage } from '@leaseops/db';
 
 /**
  * Custom TanStack Query hook to fetch all apartment listings.
@@ -18,9 +18,9 @@ export function useApartments() {
     return () => eventSource.close();
   }, [queryClient]);
 
-  return useQuery<Apartment[], Error>({
+  return useQuery<ApartmentWithThread[], Error>({
     queryKey: ['apartments'],
-    queryFn: () => apiFetch<Apartment[]>('/apartments'),
+    queryFn: () => apiFetch<ApartmentWithThread[]>('/apartments'),
   });
 }
 
@@ -28,9 +28,9 @@ export function useApartments() {
  * Custom hook to fetch a single apartment listing by ID.
  */
 export function useApartment(id: string) {
-  return useQuery<Apartment, Error>({
+  return useQuery<ApartmentWithThread, Error>({
     queryKey: ['apartments', id],
-    queryFn: () => apiFetch<Apartment>(`/apartments/${id}`),
+    queryFn: () => apiFetch<ApartmentWithThread>(`/apartments/${id}`),
     enabled: !!id,
     refetchInterval: 3000,
   });
@@ -237,10 +237,10 @@ export function useUpdateApartmentStatus() {
     },
     onMutate: async ({ id, status }) => {
       await queryClient.cancelQueries({ queryKey: ['apartments'] });
-      const previousApartments = queryClient.getQueryData<Apartment[]>(['apartments']);
+      const previousApartments = queryClient.getQueryData<ApartmentWithThread[]>(['apartments']);
 
       if (previousApartments) {
-        queryClient.setQueryData<Apartment[]>(
+        queryClient.setQueryData<ApartmentWithThread[]>(
           ['apartments'],
           previousApartments.map((apt) => (apt.id === id ? { ...apt, status } : apt))
         );
@@ -273,10 +273,10 @@ export function useDeleteApartment() {
     },
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['apartments'] });
-      const previousApartments = queryClient.getQueryData<Apartment[]>(['apartments']);
+      const previousApartments = queryClient.getQueryData<ApartmentWithThread[]>(['apartments']);
 
       if (previousApartments) {
-        queryClient.setQueryData<Apartment[]>(
+        queryClient.setQueryData<ApartmentWithThread[]>(
           ['apartments'],
           previousApartments.filter((apt) => apt.id !== id)
         );
@@ -351,6 +351,7 @@ export function useInitMessages() {
     },
     onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: ['apartments', id, 'messages'] });
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
     },
   });
 }
@@ -367,6 +368,7 @@ export function useLogMessage() {
       sender,
       text,
       status,
+      sentAt,
       metadata,
     }: {
       id: string;
@@ -374,15 +376,26 @@ export function useLogMessage() {
       text: string;
       /** Omit to take the server's default: sent for yours, draft for an AI one. */
       status?: 'draft' | 'sent';
+      /** Epoch ms for when it was said. Omit to leave it undated. */
+      sentAt?: number | null;
       metadata?: any;
     }) => {
       return apiFetch<any>(`/apartments/${id}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ sender, text, ...(status ? { status } : {}), metadata }),
+        body: JSON.stringify({
+          sender,
+          text,
+          ...(status ? { status } : {}),
+          ...(sentAt !== undefined ? { sentAt } : {}),
+          metadata,
+        }),
       });
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['apartments', variables.id, 'messages'] });
+      // The thread readout on the card and in the chat header is derived from
+      // these rows, so both listing queries are stale the moment one changes.
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
     },
   });
 }
@@ -401,6 +414,7 @@ export function useAiSuggestMessage() {
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['apartments', variables.id, 'messages'] });
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
     },
   });
 }
@@ -417,19 +431,27 @@ export function useUpdateMessage() {
       messageId,
       text,
       status,
+      sentAt,
     }: {
       id: string;
       messageId: string;
       text?: string;
       status?: 'draft' | 'sent';
+      /** Epoch ms, or `null` to clear the date. Omit to leave it as stored. */
+      sentAt?: number | null;
     }) => {
       return apiFetch<any>(`/apartments/${id}/messages/${messageId}`, {
         method: 'PATCH',
-        body: JSON.stringify({ ...(text !== undefined ? { text } : {}), ...(status ? { status } : {}) }),
+        body: JSON.stringify({
+          ...(text !== undefined ? { text } : {}),
+          ...(status ? { status } : {}),
+          ...(sentAt !== undefined ? { sentAt } : {}),
+        }),
       });
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['apartments', variables.id, 'messages'] });
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
     },
   });
 }
@@ -448,6 +470,7 @@ export function useDeleteMessage() {
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['apartments', variables.id, 'messages'] });
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
     },
   });
 }

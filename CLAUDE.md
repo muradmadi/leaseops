@@ -53,7 +53,7 @@ Run from the repo root. `just <recipe>` and `bun run <script>` are equivalent.
 | :--- | :--- |
 | `bun install` | Install all workspace dependencies |
 | `bun run dev` | API on :3000, web on :5173, both watching |
-| `bun test` | Full suite (201 tests) |
+| `bun test` | Full suite (220 tests) |
 | `bun run typecheck` | Typecheck all three workspaces |
 | `bun run build` | Production build |
 | `bun run db:migrate` | Apply Drizzle migrations |

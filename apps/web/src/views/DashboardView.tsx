@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'wouter';
 import StageControl from '../components/StageControl';
+import ThreadDigest from '../components/ThreadDigest';
 import type { PipelineStage } from '@leaseops/db';
 import {
   useApartments,
@@ -24,7 +25,7 @@ import {
   useSetApartmentStage,
   useSetApartmentAside,
 } from '../lib/useApartments';
-import type { Apartment } from '@leaseops/db';
+import type { Apartment, ApartmentWithThread } from '@leaseops/db';
 import AddListingModal from '../components/AddListingModal';
 
 export default function DashboardView() {
@@ -226,7 +227,7 @@ function ApartmentCard({
   onSetAside,
   zone,
 }: {
-  apartment: Apartment;
+  apartment: ApartmentWithThread;
   formatPrice: (price: number, currency: string) => string;
   onDelete: () => void;
   isDeleting: boolean;
@@ -325,7 +326,12 @@ function ApartmentCard({
               </p>
             </div>
           ) : (
-            <StageControl stage={apartment.pipelineStage} onChange={onStageChange} />
+            <>
+              <StageControl stage={apartment.pipelineStage} onChange={onStageChange} />
+              {/* The stage above is what you declared; this is what the thread
+                  can prove. Shown together so a stale stage is visible. */}
+              <ThreadDigest thread={apartment.thread} />
+            </>
           )}
 
           {/* Your judgement, kept beside the score rather than replacing it. */}

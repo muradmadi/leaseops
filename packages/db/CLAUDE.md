@@ -10,12 +10,19 @@ src/client.ts       Singleton Database + drizzle instance, pragmas, auto-migrate
 src/schema/         Table definitions — apartments, profiles, messages, auth
 src/repository/     Query functions. All DB access goes through these.
 src/validators/     Zod schemas derived from the tables (drizzle-zod)
+src/thread.ts       Pure reductions over stored messages (no I/O, no imports)
 src/migrate.ts      Standalone migration runner
 drizzle/            Generated SQL migrations + meta journal (8 migrations)
 ```
 
 `src/index.ts` re-exports schema, repositories, validators, and inferred types.
 Consumers import from `@leaseops/db` only — never deep-import a file path.
+
+`thread.ts` is the exception to "this package is schema and queries": it holds
+`countsAsSent` and `summariseThread`, which answer questions about a thread that
+both the API and the browser need the same answer to. It stays pure and
+I/O-free — the API derives the readout and sends it, since `apps/web` may take
+types from here but never runtime code.
 
 ## Type contract
 

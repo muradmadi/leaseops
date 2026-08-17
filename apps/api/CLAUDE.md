@@ -127,6 +127,27 @@ being a record of what you did, and it is wrong the moment you send from your ow
 mail client. `WON`/`LOST` are stored separately rather than as a flag on a single
 `DECIDED` stage so the outcome cannot go missing.
 
+**The stage is checkable, not computed.** `summariseThread` in `@leaseops/db`
+reduces a thread to who spoke last, when they said so, how many landlord
+messages you owe an answer to, and how many drafts are unsent. `GET /apartments`
+and `GET /apartments/:id` attach it as `thread` — one extra query for the whole
+dashboard via `findMessagesForApartmentIds`, since a call per card is the
+alternative. Rules:
+
+- **Derived on read, never stored.** There is no column and no regeneration
+  trigger, so it cannot go stale against the messages it describes.
+- **It never writes back.** Showing "they replied, your turn" beside a stage
+  still reading `OUTREACH_SENT` is the entire point: the mismatch is visible and
+  the user resolves it. Advancing the stage from it reintroduces exactly the
+  self-moving board rejected above.
+- **`sentAt` is the only time it will report.** Nullable, typed in by hand, and
+  never defaulted from `createdAt` — the readout says "undated" instead. `null`
+  and `undefined` stay distinct all the way through `updateMessage`, so marking
+  a message sent cannot blank a date somebody entered.
+- **`countsAsSent` moved to `@leaseops/db`** and is re-exported from `llm.ts`.
+  The transcript the model sees and the readout the user sees must agree about
+  what was sent, so there is one definition.
+
 ## Status vs. pursuit
 
 `apartments.status` is the **measurement** and `apartments.isActive` is the

@@ -835,6 +835,163 @@ describe('Conversation', () => {
 });
 
 /**
+ * The thread readout the dashboard and the chat header render.
+ *
+ * It is derived on read and must never write back — `pipelineStage` stays a
+ * record of what the user declared, and this is only what the messages prove.
+ */
+describe('Thread readout', () => {
+  let account: TestAccount;
+  let apartmentId: string;
+
+  const JAN = Date.UTC(2026, 0, 10, 9, 0, 0);
+  const FEB = Date.UTC(2026, 1, 10, 9, 0, 0);
+
+  beforeAll(async () => {
+    account = await createTestAccount('thread');
+    const created: any = await (
+      await app.fetch(
+        new Request('http://localhost/api/apartments', {
+          method: 'POST',
+          headers: authHeaders(account),
+          body: JSON.stringify({ title: 'Thread test flat', price: 900, description: 'A flat.' }),
+        })
+      )
+    ).json();
+    apartmentId = created.id;
+  });
+
+  afterAll(async () => {
+    await account.cleanup();
+  });
+
+  async function log(body: Record<string, unknown>) {
+    const res = await app.fetch(
+      new Request(`http://localhost/api/apartments/${apartmentId}/messages`, {
+        method: 'POST',
+        headers: authHeaders(account),
+        body: JSON.stringify(body),
+      })
+    );
+    return { status: res.status, body: (await res.json()) as any };
+  }
+
+  async function readThread() {
+    const listing: any = await (
+      await app.fetch(
+        new Request(`http://localhost/api/apartments/${apartmentId}`, { headers: authHeaders(account) })
+      )
+    ).json();
+    return listing.thread;
+  }
+
+  it('reports a listing nobody has written to as nothing sent', async () => {
+    const listings: any[] = await (
+      await app.fetch(new Request('http://localhost/api/apartments', { headers: authHeaders(account) }))
+    ).json();
+
+    const listing = listings.find((a) => a.id === apartmentId);
+    expect(listing.thread).toEqual({
+      exchanged: 0,
+      lastSpeaker: null,
+      lastSpokeAt: null,
+      awaitingYou: 0,
+      unsent: 0,
+      undated: 0,
+    });
+  });
+
+  it('does not count an unsent draft as an exchange', async () => {
+    const { body: draft } = await log({ sender: 'ai_suggestion', text: 'Outreach wording.' });
+    expect(draft.status).toBe('draft');
+
+    const thread = await readThread();
+    expect(thread.exchanged).toBe(0);
+    expect(thread.unsent).toBe(1);
+    expect(thread.lastSpeaker).toBeNull();
+  });
+
+  it('keeps a stated time through a round trip and puts the turn on them', async () => {
+    const { body: mine } = await log({ sender: 'user', text: 'Buenas, sigue disponible?', sentAt: JAN });
+    expect(new Date(mine.sentAt).getTime()).toBe(JAN);
+
+    const thread = await readThread();
+    expect(thread.lastSpeaker).toBe('you');
+    expect(thread.lastSpokeAt).toBe(JAN);
+    expect(thread.awaitingYou).toBe(0);
+    expect(thread.undated).toBe(0);
+  });
+
+  it('puts the turn on you, and counts every landlord message since you spoke', async () => {
+    await log({ sender: 'landlord', text: 'Si, disponible.', sentAt: FEB });
+    await log({ sender: 'landlord', text: 'La fianza son 3 meses.', sentAt: FEB });
+
+    const thread = await readThread();
+    expect(thread.lastSpeaker).toBe('landlord');
+    expect(thread.awaitingYou).toBe(2);
+    expect(thread.exchanged).toBe(3);
+  });
+
+  /**
+   * The reason `sentAt` is nullable and separate from `createdAt`: an undated
+   * message reports no time rather than borrowing when its row was written.
+   */
+  it('leaves a message undated when nobody said when it was sent', async () => {
+    const { body: undated } = await log({ sender: 'landlord', text: 'Una cosa mas.' });
+    expect(undated.sentAt).toBeNull();
+    expect(undated.createdAt).not.toBeNull();
+
+    const thread = await readThread();
+    expect(thread.lastSpokeAt).toBeNull();
+    expect(thread.undated).toBe(1);
+  });
+
+  it('clears a date on request, and leaves it alone when the patch is about something else', async () => {
+    const { body: dated } = await log({ sender: 'ai_suggestion', text: 'A reply.', sentAt: FEB });
+
+    const marked: any = await (
+      await app.fetch(
+        new Request(`http://localhost/api/apartments/${apartmentId}/messages/${dated.id}`, {
+          method: 'PATCH',
+          headers: authHeaders(account),
+          body: JSON.stringify({ status: 'sent' }),
+        })
+      )
+    ).json();
+    // Marking a message sent must not blank a date somebody entered.
+    expect(new Date(marked.sentAt).getTime()).toBe(FEB);
+
+    const cleared: any = await (
+      await app.fetch(
+        new Request(`http://localhost/api/apartments/${apartmentId}/messages/${dated.id}`, {
+          method: 'PATCH',
+          headers: authHeaders(account),
+          body: JSON.stringify({ sentAt: null }),
+        })
+      )
+    ).json();
+    expect(cleared.sentAt).toBeNull();
+  });
+
+  it('rejects a time outside the years a lease conversation can occupy', async () => {
+    const { status } = await log({ sender: 'landlord', text: 'Mistyped year.', sentAt: 253_402_300_800_000 });
+    expect(status).toBe(400);
+  });
+
+  it('never advances the pipeline stage on its own', async () => {
+    const listing: any = await (
+      await app.fetch(
+        new Request(`http://localhost/api/apartments/${apartmentId}`, { headers: authHeaders(account) })
+      )
+    ).json();
+
+    // A whole conversation has happened above this line.
+    expect(listing.thread.exchanged).toBeGreaterThan(0);
+    expect(listing.pipelineStage).toBe('NOT_CONTACTED');
+  });
+});
+
+/**
  * The whole point of this endpoint is what it *does not* touch. A bulk write
  * across every listing a household owns is the kind of thing that is discovered
  * to have been destructive a week later, so the axes it must leave alone are

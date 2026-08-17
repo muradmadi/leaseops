@@ -25,9 +25,14 @@ import {
   findProfileByHouseholdId,
   updateApartmentEnrichment,
   findMessagesByApartmentId,
+  findMessagesForApartmentIds,
   createMessage,
   updateMessage,
   removeMessage,
+  summariseThread,
+  type Apartment,
+  type Message,
+  type ApartmentWithThread,
 } from '@leaseops/db';
 import { processListingAsync, buildListingFromInput, DEFAULT_TITLE } from '../services/scraper';
 import { rescoreApartment } from '../services/rescore';
@@ -80,6 +85,30 @@ app.get('/sse', async (c) => {
 });
 
 /**
+ * Attaches each listing's conversation state, in one extra query for the batch.
+ *
+ * Derived on read, never stored. `pipelineStage` is what the user declared; this
+ * is what the messages can prove, and the dashboard shows them side by side so a
+ * stale stage is visible instead of silently wrong. Nothing here writes back —
+ * the stage stays a record of what the user did.
+ */
+async function withThreads(apartments: Apartment[]): Promise<ApartmentWithThread[]> {
+  const messages = await findMessagesForApartmentIds(apartments.map((a) => a.id));
+
+  const byApartment = new Map<string, Message[]>();
+  for (const message of messages) {
+    const bucket = byApartment.get(message.apartmentId);
+    if (bucket) bucket.push(message);
+    else byApartment.set(message.apartmentId, [message]);
+  }
+
+  return apartments.map((apartment) => ({
+    ...apartment,
+    thread: summariseThread(byApartment.get(apartment.id) ?? []),
+  }));
+}
+
+/**
  * GET /api/apartments
  * Retrieves all apartment listings, optionally filtered by pipeline status.
  */
@@ -89,7 +118,7 @@ app.get(
   async (c) => {
     const { status } = c.req.valid('query');
     const results = await listApartments(c.get('householdId'), status);
-    return c.json(results, 200);
+    return c.json(await withThreads(results), 200);
   }
 );
 
@@ -182,7 +211,11 @@ app.get('/:id', async (c) => {
     return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
   }
 
-  return c.json(apartment, 200);
+  // The chat reads its thread state from here rather than deriving it in the
+  // browser: `apps/web` may import types from `@leaseops/db` but never runtime
+  // code, and one derivation is what keeps the card and the chat agreeing.
+  const [withThread] = await withThreads([apartment]);
+  return c.json(withThread, 200);
 });
 
 /**
@@ -616,10 +649,19 @@ app.post('/:id/messages/init', async (c) => {
  * POST /api/apartments/:id/messages
  * Logs a new message in the chat
  */
+/**
+ * When a message was said, in epoch milliseconds, as stated by the person
+ * logging it. Bounded to 1970–2100 so a mistyped year lands as a 400 rather than
+ * as a date the readout would then render.
+ */
+const sentAtSchema = z.number().int().min(0).max(4_102_444_800_000);
+
 const createMessageSchema = z.object({
   sender: z.enum(['landlord', 'ai_suggestion', 'user']),
   text: z.string().min(1),
   status: z.enum(['draft', 'sent']).optional(),
+  /** Omitted means undated, which the thread readout reports as unknown. */
+  sentAt: sentAtSchema.nullable().optional(),
   metadata: z.any().optional(),
 });
 
@@ -639,7 +681,7 @@ app.post(
   zValidator('json', createMessageSchema),
   async (c) => {
     const id = c.req.param('id');
-    const { sender, text, status, metadata } = c.req.valid('json');
+    const { sender, text, status, sentAt, metadata } = c.req.valid('json');
 
     const apartment = await findApartmentForHousehold(id, c.get('householdId'));
     if (!apartment) {
@@ -653,6 +695,10 @@ app.post(
       sender,
       text,
       status: status ?? defaultStatus(sender),
+      // Never defaulted to `now`. `createdAt` below already records when the row
+      // was written; a message is dated only by the person who says when it was
+      // said, and unknown is a truthful answer where a guess is not.
+      sentAt: sentAt == null ? null : new Date(sentAt),
       metadata,
       createdAt: now,
       updatedAt: now,
@@ -675,9 +721,15 @@ const updateMessageSchema = z
      * rejected suggestion becoming a promise to the owner.
      */
     status: z.enum(['draft', 'sent']).optional(),
+    /**
+     * `null` clears the date back to undated; omitting it leaves whatever is
+     * stored alone. The two must stay distinct — marking a message sent must not
+     * blank a date somebody entered.
+     */
+    sentAt: sentAtSchema.nullable().optional(),
   })
-  .refine((v) => v.text !== undefined || v.status !== undefined, {
-    message: 'Provide text, status, or both',
+  .refine((v) => v.text !== undefined || v.status !== undefined || v.sentAt !== undefined, {
+    message: 'Provide text, status, sentAt, or a combination',
   });
 
 app.patch(
@@ -691,7 +743,12 @@ app.patch(
     const apartment = await findApartmentForHousehold(id, c.get('householdId'));
     if (!apartment) return c.json({ error: 'Not found' }, 404);
 
-    const updated = await updateMessage(messageId, patch);
+    const updated = await updateMessage(messageId, {
+      ...patch,
+      // `undefined` and `null` mean different things here, so the conversion has
+      // to preserve both rather than collapse them into a falsy check.
+      sentAt: patch.sentAt === undefined ? undefined : patch.sentAt === null ? null : new Date(patch.sentAt),
+    });
     if (!updated) return c.json({ error: 'Message not found' }, 404);
 
     return c.json(updated, 200);

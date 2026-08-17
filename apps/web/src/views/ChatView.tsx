@@ -6,6 +6,7 @@ import {
   X,
   MessageSquare,
   Check,
+  Clock,
   Copy,
   Loader2,
   ShieldAlert,
@@ -16,6 +17,7 @@ import {
   Pencil,
   Trash2
 } from 'lucide-react';
+import ThreadDigest, { formatSaidAt } from '../components/ThreadDigest';
 
 /**
  * Whether a message went to the landlord — the one thing that decides if the AI
@@ -41,6 +43,60 @@ function StatusBadge({ sent }: { sent: boolean }) {
 }
 
 /**
+ * `<input type="datetime-local">` speaks local wall-clock, not an ISO instant,
+ * so both directions are converted by hand rather than through `toISOString`,
+ * which would shift the value by the timezone offset every round trip.
+ */
+function toLocalInput(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Epoch ms from that input, or `null` for an empty or unparseable field. */
+function fromLocalInput(value: string): number | null {
+  if (!value) return null;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** What a message's stored `sentAt` looks like in the editor, blank if undated. */
+function editableSentAt(sentAt: unknown): string {
+  if (!sentAt) return '';
+  const ms = new Date(sentAt as string).getTime();
+  return Number.isFinite(ms) ? toLocalInput(ms) : '';
+}
+
+/**
+ * When a message was said, shown only where somebody said so.
+ *
+ * Never `createdAt`. That is when the row was written — you send from your own
+ * mail client and log it here a day later — and rendering it as the message time
+ * is the bug this whole field exists to fix. Undated offers the fix instead of a
+ * guess.
+ */
+function SaidAt({ sentAt, onAdd }: { sentAt: unknown; onAdd: () => void }) {
+  const ms = sentAt ? new Date(sentAt as string).getTime() : NaN;
+
+  if (!Number.isFinite(ms)) {
+    return (
+      <button
+        onClick={onAdd}
+        title="Nobody has said when this was sent"
+        className="flex items-center gap-1 text-zinc-600 hover:text-zinc-300 transition-colors font-mono text-[10px] font-normal"
+      >
+        <Clock className="w-3 h-3" />
+        add time
+      </button>
+    );
+  }
+
+  return (
+    <span className="text-zinc-500 font-mono text-[10px] font-normal">{formatSaidAt(ms)}</span>
+  );
+}
+
+/**
  * The conversation with one landlord.
  *
  * `sender` has three values and they must stay visually distinct: a message you
@@ -59,16 +115,39 @@ export default function ChatView() {
   const updateMessageMutation = useUpdateMessage();
   const deleteMessageMutation = useDeleteMessage();
 
-  const [draftMessage, setDraftMessage] = useState<{sender: 'landlord' | 'user', text: string} | null>(null);
+  /**
+   * `sentAt` is prefilled with the current time and sits in the composer where
+   * you can see and change it before saving. That is you stating when it was
+   * said — unlike `createdAt`, which the app fills in behind you and which is
+   * why timestamps were pulled from this view in the first place.
+   */
+  const [draftMessage, setDraftMessage] = useState<{
+    sender: 'landlord' | 'user';
+    text: string;
+    sentAt: string;
+  } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [editingMessage, setEditingMessage] = useState<{ id: string, text: string } | null>(null);
+  const [editingMessage, setEditingMessage] = useState<{ id: string; text: string; sentAt: string } | null>(null);
+
+  /** Opens the editor on a message, carrying whatever date it already has. */
+  const startEditing = (msg: any) =>
+    setEditingMessage({ id: msg.id, text: msg.text, sentAt: editableSentAt(msg.sentAt) });
+
+  const startComposing = (sender: 'landlord' | 'user') =>
+    setDraftMessage({ sender, text: '', sentAt: toLocalInput(Date.now()) });
 
   const busy = logMessageMutation.isPending || aiSuggestMutation.isPending || initMessagesMutation.isPending;
   const actionError = aiSuggestMutation.error || initMessagesMutation.error;
 
   const handleUpdateMessage = async () => {
     if (!editingMessage || !editingMessage.text.trim()) return;
-    await updateMessageMutation.mutateAsync({ id, messageId: editingMessage.id, text: editingMessage.text });
+    await updateMessageMutation.mutateAsync({
+      id,
+      messageId: editingMessage.id,
+      text: editingMessage.text,
+      // An emptied field clears the date rather than leaving the old one behind.
+      sentAt: fromLocalInput(editingMessage.sentAt),
+    });
     setEditingMessage(null);
   };
 
@@ -116,10 +195,16 @@ export default function ChatView() {
 
   const handleSaveDraft = async (status?: 'sent' | 'draft') => {
     if (!draftMessage || !draftMessage.text.trim()) return;
-    const { sender, text } = draftMessage;
+    const { sender, text, sentAt } = draftMessage;
     setDraftMessage(null);
 
-    await logMessageMutation.mutateAsync({ id, sender, text: text.trim(), status });
+    await logMessageMutation.mutateAsync({
+      id,
+      sender,
+      text: text.trim(),
+      status,
+      sentAt: fromLocalInput(sentAt),
+    });
   };
 
   const handleAiSuggest = async () => {
@@ -149,17 +234,18 @@ export default function ChatView() {
   };
 
   /*
-   * There is deliberately no timestamp on a message.
+   * A message's timestamp is `sentAt` and nothing else.
    *
    * `createdAt` is when the row was written, which is not when anything was
    * said: you send a message from your own mail client and mark it sent here a
-   * day later, and the bubble would claim you wrote it just now. It was rendered
-   * as a bare clock time too, so a thread spanning a week showed five times and
-   * no dates. A wrong fact on screen is worse than a blank space.
+   * day later, and the bubble would claim you wrote it just now. That version
+   * shipped, rendered a bare clock time, and was removed — a thread spanning a
+   * week showed five times and no dates, all of them wrong.
    *
-   * Restoring it means a `sentAt` the user can set, separate from `createdAt`
-   * for the same reason `isActive` is separate from `status` — when something
-   * happened is a fact about the conversation, not about the record.
+   * `sentAt` is the fix, and it is set by hand for the same reason `isActive` is
+   * separate from `status`: when something happened is a fact about the
+   * conversation, not about the record. Left blank it stays blank, and every
+   * readout says "undated" rather than falling back.
    */
   const editor = (msg: any, accent: 'blue' | 'emerald') => (
     <div className="flex flex-col gap-2 mt-2">
@@ -170,6 +256,18 @@ export default function ChatView() {
         value={editingMessage!.text}
         onChange={(e) => setEditingMessage({ ...editingMessage!, text: e.target.value })}
       />
+      <label className="flex flex-col gap-1.5">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">When was this sent?</span>
+        <input
+          type="datetime-local"
+          value={editingMessage!.sentAt}
+          onChange={(e) => setEditingMessage({ ...editingMessage!, sentAt: e.target.value })}
+          className={`w-full bg-zinc-950 border rounded-lg px-2 min-h-[44px] text-[16px] sm:text-sm text-zinc-100 focus:outline-none ${
+            accent === 'blue' ? 'border-zinc-800 focus:border-blue-500' : 'border-emerald-500/30 focus:border-emerald-500'
+          }`}
+        />
+        <span className="text-[10px] text-zinc-600">Leave empty to keep it undated.</span>
+      </label>
       <div className="flex gap-2 justify-end">
         <button onClick={() => setEditingMessage(null)} className="min-h-[44px] px-3 text-xs text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
         <button
@@ -223,6 +321,11 @@ export default function ChatView() {
         </div>
       </header>
 
+      {/* Where this conversation stands, derived from the thread below it. */}
+      <div className="px-4 sm:px-6 pt-3 max-w-4xl mx-auto w-full shrink-0">
+        <ThreadDigest thread={apartment.thread} size="full" />
+      </div>
+
       {/* Message Stream */}
       <main className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6 max-w-4xl mx-auto w-full custom-scrollbar">
 
@@ -254,9 +357,12 @@ export default function ChatView() {
                 </div>
                 <div className="max-w-[85%] sm:max-w-md bg-zinc-900 border border-zinc-800/90 text-zinc-100 rounded-2xl rounded-bl-sm p-4 text-sm space-y-1.5 shadow-lg">
                   <div className="flex items-center justify-between gap-4 text-[10px] font-bold text-zinc-400">
-                    <span className="text-blue-400 uppercase tracking-wider">Landlord</span>
+                    <span className="flex items-center gap-2 min-w-0">
+                      <span className="text-blue-400 uppercase tracking-wider">Landlord</span>
+                      <SaidAt sentAt={msg.sentAt} onAdd={() => startEditing(msg)} />
+                    </span>
                     <div className="flex items-center gap-2">
-                      <button title="Edit" onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="hover:text-zinc-200"><Pencil className="w-3 h-3" /></button>
+                      <button title="Edit" onClick={() => startEditing(msg)} className="hover:text-zinc-200"><Pencil className="w-3 h-3" /></button>
                       <button title="Delete" onClick={() => deleteMessageMutation.mutate({ id, messageId: msg.id })} className="hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
                     </div>
                   </div>
@@ -275,10 +381,13 @@ export default function ChatView() {
               <div key={msg.id} className="flex justify-end items-end gap-2.5 animate-in fade-in slide-in-from-right-4 duration-300">
                 <div className="max-w-[85%] sm:max-w-md bg-blue-950/40 border border-blue-500/30 text-zinc-100 rounded-2xl rounded-br-sm p-4 text-sm space-y-2.5 shadow-lg">
                   <div className="flex items-center justify-between gap-3 text-[10px] font-bold text-zinc-400">
-                    <span className="text-blue-300 uppercase tracking-wider">You</span>
+                    <span className="flex items-center gap-2 min-w-0">
+                      <span className="text-blue-300 uppercase tracking-wider">You</span>
+                      <SaidAt sentAt={msg.sentAt} onAdd={() => startEditing(msg)} />
+                    </span>
                     <div className="flex items-center gap-2">
                       <StatusBadge sent={sent} />
-                      <button title="Edit" onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="hover:text-zinc-200"><Pencil className="w-3 h-3" /></button>
+                      <button title="Edit" onClick={() => startEditing(msg)} className="hover:text-zinc-200"><Pencil className="w-3 h-3" /></button>
                       <button title="Delete" onClick={() => deleteMessageMutation.mutate({ id, messageId: msg.id })} className="hover:text-red-400"><Trash2 className="w-3 h-3" /></button>
                     </div>
                   </div>
@@ -315,10 +424,12 @@ export default function ChatView() {
                   <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
                     <Bot className="w-3.5 h-3.5" />
                     {isOutreach ? 'AI Initial Outreach Draft' : 'AI Suggested Reply'}
+                    {/* Only meaningful once it went out; a draft has no send time. */}
+                    {isSent && <SaidAt sentAt={msg.sentAt} onAdd={() => startEditing(msg)} />}
                   </span>
                   <div className="flex items-center gap-2">
                     <StatusBadge sent={isSent} />
-                    <button title="Edit" onClick={() => setEditingMessage({ id: msg.id, text: msg.text })} className="text-emerald-400 hover:text-emerald-300"><Pencil className="w-3 h-3" /></button>
+                    <button title="Edit" onClick={() => startEditing(msg)} className="text-emerald-400 hover:text-emerald-300"><Pencil className="w-3 h-3" /></button>
                   </div>
                 </div>
                 {isEditing ? editor(msg, 'emerald') : (
@@ -379,6 +490,15 @@ export default function ChatView() {
                   value={draftMessage.text}
                   onChange={(e) => setDraftMessage({ ...draftMessage, text: e.target.value })}
                 />
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">When was this sent?</span>
+                  <input
+                    type="datetime-local"
+                    value={draftMessage.sentAt}
+                    onChange={(e) => setDraftMessage({ ...draftMessage, sentAt: e.target.value })}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 min-h-[44px] text-[16px] sm:text-sm text-zinc-100 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50"
+                  />
+                </label>
                 <div className="flex gap-2 justify-end">
                   <button onClick={() => setDraftMessage(null)} className="px-4 min-h-[44px] rounded-xl text-xs font-semibold text-zinc-400 hover:text-zinc-100 transition-colors">Cancel</button>
                   <button onClick={() => handleSaveDraft()} disabled={!draftMessage.text.trim()} className="px-4 min-h-[44px] rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-colors shadow-lg shadow-blue-500/20 disabled:opacity-50 cursor-pointer active:scale-95">Save Message</button>
@@ -398,6 +518,15 @@ export default function ChatView() {
                   value={draftMessage.text}
                   onChange={(e) => setDraftMessage({ ...draftMessage, text: e.target.value })}
                 />
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">When was this sent?</span>
+                  <input
+                    type="datetime-local"
+                    value={draftMessage.sentAt}
+                    onChange={(e) => setDraftMessage({ ...draftMessage, sentAt: e.target.value })}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 min-h-[44px] text-[16px] sm:text-sm text-zinc-100 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50"
+                  />
+                </label>
                 <div className="flex gap-2 justify-end">
                   <button onClick={() => setDraftMessage(null)} className="px-4 min-h-[44px] rounded-xl text-xs font-semibold text-zinc-400 hover:text-zinc-100 transition-colors">Cancel</button>
                   <button onClick={() => handleSaveDraft('draft')} disabled={!draftMessage.text.trim()} className="px-4 min-h-[44px] rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-bold transition-colors disabled:opacity-50 cursor-pointer active:scale-95">Save as draft</button>
@@ -423,7 +552,7 @@ export default function ChatView() {
           )}
           <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 justify-center items-center">
             <button
-              onClick={() => setDraftMessage({ sender: 'landlord', text: '' })}
+              onClick={() => startComposing('landlord')}
               disabled={busy || !!draftMessage}
               className="flex-1 w-full min-h-[44px] bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-blue-400 font-bold px-4 py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 shadow-sm disabled:opacity-40"
             >
@@ -431,7 +560,7 @@ export default function ChatView() {
               <span>Add Landlord Response</span>
             </button>
             <button
-              onClick={() => setDraftMessage({ sender: 'user', text: '' })}
+              onClick={() => startComposing('user')}
               disabled={busy || !!draftMessage}
               className="flex-1 w-full min-h-[44px] bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-blue-300 font-bold px-4 py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 shadow-sm disabled:opacity-40"
             >

@@ -104,13 +104,24 @@ container. **Never** `dangerouslySetInnerHTML` — this is untrusted content.
   is what lets the API stop inferring anything. Your own messages carry the same
   Sent/Draft toggle and can be saved either way from the composer. Landlord
   messages have no such state — they were sent, by them, or they would not exist.
-- **Messages carry no timestamp, deliberately.** `createdAt` is when the row was
-  written, not when anything was said — you send from your own mail client and
-  press *Mark sent* a day later. It was also rendered as a bare clock time, so a
-  thread spanning a week showed five times and no dates at all. Restoring it means
-  a user-settable `sentAt`, separate from `createdAt` for the same reason
-  `isActive` is separate from `status`: when something happened is a fact about
-  the conversation, not about the record. Do not re-add `createdAt` to a bubble.
+- **A message's timestamp is `sentAt`, and it is typed in.** `createdAt` is when
+  the row was written, not when anything was said — you send from your own mail
+  client and press *Mark sent* a day later. Rendering it as the message time
+  shipped once and was removed: a thread spanning a week showed five bare clock
+  times and no dates, all wrong. `sentAt` replaced it, nullable and set by hand,
+  separate from `createdAt` for the same reason `isActive` is separate from
+  `status`. **Do not re-add `createdAt` to a bubble**, and do not default
+  `sentAt` from it — an undated message renders *add time*, and every readout
+  says "undated" rather than falling back. The composer prefills the current time
+  because you can see and change it before saving, which is you stating it; the
+  app never writes that field behind you.
+- **`ThreadDigest` is a readout, not a control.** It restates what the messages
+  prove — who spoke last, when, whether you owe a reply — beside the
+  `StageControl` showing the stage you declared, so a stale stage is visible
+  instead of silently wrong. It must never set `pipelineStage`. Its `thread`
+  comes from the API (`GET /apartments` and `GET /apartments/:id` both attach
+  it): `summariseThread` lives in `@leaseops/db` and **must not** be imported
+  here, since that is runtime code and this package takes types only.
 - **There is no translation in this app.** The landlord bubble used to be badged
   `(Auto-detected → English)` from metadata hardcoded at save time, with no
   detection and no translation anywhere in the repo — and pointed at English
