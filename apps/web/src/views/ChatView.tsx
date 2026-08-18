@@ -18,6 +18,7 @@ import {
   Trash2
 } from 'lucide-react';
 import ThreadDigest, { formatSaidAt } from '../components/ThreadDigest';
+import OutreachAuthorControl from '../components/OutreachAuthorControl';
 
 /**
  * Whether a message went to the landlord — the one thing that decides if the AI
@@ -367,8 +368,14 @@ export default function ChatView() {
       </header>
 
       {/* Where this conversation stands, derived from the thread below it. */}
-      <div className="px-4 sm:px-6 pt-3 max-w-4xl mx-auto w-full shrink-0">
+      <div className="px-4 sm:px-6 pt-3 max-w-4xl mx-auto w-full shrink-0 space-y-3">
         <ThreadDigest thread={apartment.thread} size="full" />
+        {/* Whose voice the drafts below are in — the place a wrong one is noticed. */}
+        <OutreachAuthorControl
+          apartmentId={apartment.id}
+          outreachAuthorId={apartment.outreachAuthorId}
+          createdBy={apartment.createdBy}
+        />
       </div>
 
       {/* Message Stream */}

@@ -126,6 +126,29 @@ export function useSetApartmentActive() {
 }
 
 /**
+ * Sets whose voice this listing's messages are written in, or clears it back to
+ * whoever entered the listing.
+ *
+ * `authorId: null` is the clear, not a no-op — an untouched listing follows its
+ * creator, and this puts it back to that.
+ */
+export function useSetApartmentAuthor() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ id, authorId }: { id: string; authorId: string | null }) =>
+      apiFetch<Apartment>(`/apartments/${id}/author`, {
+        method: 'PATCH',
+        body: JSON.stringify({ authorId }),
+      }),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['apartments'] });
+      queryClient.invalidateQueries({ queryKey: ['apartments', variables.id] });
+    },
+  });
+}
+
+/**
  * Edits a listing in full and re-scores it.
  *
  * The score is expected to move on save — that is the reason this exists. The AI

@@ -306,8 +306,35 @@ analysis `flags`) and the facts the tenant actually supplied.
 - **Never claim an unmet requirement is met.** Where the owner would find out
   anyway (pets, self-employment, household), the draft states the true position
   and leads with a compensating fact instead.
-- Employment details stay first-person singular — the model otherwise gave the
-  partner the same job and salary.
+- **Work belongs to a person; everything else in the persona belongs to the
+  household.** A job, its contract, its income and the right to work behind it
+  are facts about one body, so they live on `users.workProfile` and reach the
+  prompt as `persona.people`, one line each, with exactly one member marked as
+  the writer. Documents, guarantees, pets, dates and availability stay shared on
+  `userProfiles.tenantPersona`, which is why household answers must be phrased to
+  stay true in either member's mouth ("Murad's parents can act as guarantors").
+- **The author is whoever entered the listing** (`apartments.createdBy`), because
+  that is the person with an account on the portal writing to this landlord.
+  `resolveOutreachPersona(householdId, profile, authorId)` marks them, and the
+  chat reply takes the same author as the outreach so a thread cannot change
+  voice halfway through.
+- **`resolveApartmentAuthorId` owns the order and must stay the only place it
+  lives**: `outreachAuthorId` (an explicit choice) → `createdBy` (who entered it)
+  → neither, falling through to the household's oldest member, whose job the
+  shared persona used to carry. `outreachAuthorId` is a **second column, not an
+  edit to `createdBy`** — same reasoning as `isActive` beside `status`. One
+  records what happened, the other is a choice, and partners log in on each
+  other's phones often enough that both facts are worth keeping.
+- **The author id in `PATCH /:id/author` is checked against the caller's own
+  household.** It arrives in a request body, so it is untrusted exactly as a
+  `householdId` would be; unchecked it pulls another household's work details
+  into these prompts.
+- This replaced a rule that said the opposite. Rule 3a used to read "never
+  attribute a job to the other adults — say 'we are two adults' and keep
+  employment in the first person singular", which was right for one sender and
+  wrong for a shared pipeline: a message Paulie sent opened "somos Murad y
+  Paulie" and continued "yo trabajo como MarTech Specialist", which is Murad's
+  job. It also threw away the second income, the strongest card a couple has.
 - **A condition travels with its fact.** Income that depends on a pending visa or
   probation must carry that condition in the same breath; a future salary quoted
   bare reads as invention, and the condition usually explains the number.

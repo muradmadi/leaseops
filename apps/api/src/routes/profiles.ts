@@ -1,6 +1,12 @@
 import { Hono } from 'hono';
 import { zValidator } from '@hono/zod-validator';
-import { findProfileByHouseholdId, upsertProfile, upsertProfileApiSchema } from '@leaseops/db';
+import {
+  findProfileByHouseholdId,
+  upsertProfile,
+  updateTenantPersona,
+  upsertProfileApiSchema,
+  updateTenantPersonaApiSchema,
+} from '@leaseops/db';
 import type { AuthEnv } from '../services/auth';
 
 const profilesRouter = new Hono<AuthEnv>();
@@ -68,6 +74,23 @@ const upsertHandler = async (c: any) => {
 
   return c.json({ success: true, exists: true, ...saved }, 200);
 };
+
+/**
+ * PATCH /api/profiles/me/persona
+ * The household's shared tenant facts, and nothing else.
+ *
+ * Separate from the upsert above because that one takes the whole profile and
+ * every field of its payload has a default — a caller sending only the persona
+ * through it would reset the location, the budget and all 32 feature weights.
+ * The work screen edits the persona without holding any of that.
+ */
+profilesRouter.patch('/me/persona', zValidator('json', updateTenantPersonaApiSchema), async (c) => {
+  const updated = await updateTenantPersona(c.get('householdId'), c.req.valid('json').tenantPersona);
+  if (!updated) {
+    return c.json({ message: 'This household has no profile yet', statusCode: 404 }, 404);
+  }
+  return c.json({ success: true, exists: true, ...updated }, 200);
+});
 
 profilesRouter.put('/me', zValidator('json', upsertProfileApiSchema), upsertHandler);
 profilesRouter.post('/me', zValidator('json', upsertProfileApiSchema), upsertHandler);

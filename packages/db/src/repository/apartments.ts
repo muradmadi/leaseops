@@ -148,6 +148,24 @@ export async function setApartmentAside(
   return updated;
 }
 
+/**
+ * Overrides who this listing's outreach is written as, or clears the override.
+ *
+ * Deliberately does not touch `createdBy`: who entered the listing is a record
+ * of what happened and stays true whoever ends up writing to the landlord.
+ */
+export async function setApartmentOutreachAuthor(
+  id: string,
+  outreachAuthorId: string | null
+): Promise<Apartment | undefined> {
+  const [updated] = await db
+    .update(apartments)
+    .set({ outreachAuthorId, updatedAt: new Date() })
+    .where(eq(apartments.id, id))
+    .returning();
+  return updated;
+}
+
 /** Moves a listing along the outreach pipeline. Never called automatically. */
 export async function setApartmentStage(
   id: string,

@@ -322,6 +322,38 @@ export default function SettingsView() {
               )}
             </div>
 
+            {/*
+              Work is personal and changes — a contract ends, a visa comes through.
+              It is edited on the same screen it was first asked on, so there is
+              one implementation of the questions rather than two that can drift.
+            */}
+            <div className="p-4 sm:p-5 space-y-1.5 border-t border-zinc-800/60">
+              <p className="text-xs text-zinc-500 font-medium">Your work</p>
+              {(() => {
+                const me = household?.members.find((m) => m.id === authState?.user?.id);
+                const occupation = me?.workProfile?.occupation?.trim();
+                return occupation ? (
+                  <p className="font-bold text-zinc-200 text-sm break-words">{occupation}</p>
+                ) : (
+                  <p className="text-sm text-zinc-500">
+                    {me?.workProfile?.employmentStatus
+                      ? 'Answered, with no details added.'
+                      : 'Not answered yet.'}
+                  </p>
+                );
+              })()}
+              <p className="text-xs leading-relaxed text-zinc-500">
+                Yours alone. Messages for listings you entered are written in your voice; your
+                partner's are written in theirs.
+              </p>
+              <Link
+                href="/about-you"
+                className="text-xs text-blue-400 hover:text-blue-300 font-bold cursor-pointer min-h-[44px] flex items-center"
+              >
+                Edit your work and the shared details
+              </Link>
+            </div>
+
             {/* Derived outreach signature */}
             <div className="p-4 sm:p-5 space-y-1.5">
               <p className="text-xs text-zinc-500 font-medium">Outreach is signed</p>

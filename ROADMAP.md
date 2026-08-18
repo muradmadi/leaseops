@@ -114,9 +114,12 @@ someone may want to pick up.
   source bind-mounted. There is no `Dockerfile` and no production serve path for
   the built PWA. This is the highest-value item on this page for anyone wanting
   to actually deploy LeaseOps.
-- **Outreach drafts end with a name placeholder.** `TenantPersona` has no name
-  field, so every generated message needs a manual edit before sending. Small
-  change: add the field to the persona, onboarding, and the prompt.
+- **Redrafting after the voice changes.** Setting a listing's "written as" to the
+  other member applies from the next draft on; messages already in the thread are
+  left as they were written, because they may already have been sent. Redoing one
+  means rejecting the draft and drafting again. A "rewrite this draft as X" button
+  would save the two steps, at the price of an LLM call and a destructive edit —
+  which is why it is not there yet.
 - **Manual ratings silently override listing evidence.** If a user rates a
   feature the listing contradicts, scoring trusts the user while the AI review
   trusts the listing, and the two can visibly disagree. A "you rated this

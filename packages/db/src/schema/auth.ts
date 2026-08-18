@@ -15,6 +15,58 @@ export type Gender = (typeof GENDERS)[number];
 export type GrammaticalForm = (typeof GRAMMATICAL_FORMS)[number];
 
 /**
+ * What the person does, as a landlord screens for it.
+ *
+ * Closed set, because every option a real applicant needs is here and a free
+ * text box produces "engineer", "SWE" and "trabajo en tecnología" for the same
+ * fact. It is the one work answer everybody can give, which is why it — and only
+ * it — gates entry to the app.
+ */
+export const EMPLOYMENT_STATUSES = [
+  'employed',
+  'self_employed',
+  'student',
+  'student_working',
+  'retired',
+  'not_working',
+] as const;
+
+export type EmploymentStatus = (typeof EMPLOYMENT_STATUSES)[number];
+
+/**
+ * One member's working life — the only part of the tenant story that belongs to
+ * a person rather than to the household.
+ *
+ * Everything a landlord screens on is shared (documents, guarantees, pets, dates)
+ * except this: a job, its contract, its income and the right to work that
+ * underwrites it are facts about one body. Kept per user so an outreach message
+ * can say "I" about its actual author and name the other members for their own
+ * work, instead of silently assigning one member's job to whoever sent it.
+ *
+ * `contractDetails` is free text on purpose. A dropdown offering "permanent"
+ * becomes "contrato indefinido" in a Spanish draft, which is a term the owner
+ * checks against the document — see rule 3d in `OUTREACH_RULES`. The user's own
+ * wording has to survive into the letter.
+ */
+export interface WorkProfile {
+  employmentStatus?: EmploymentStatus | null;
+  /** Role, employer, and whether it is remote — "MarTech Specialist at LeadTech, remote". */
+  occupation?: string;
+  /** In the member's own words. Never normalised into a legal term. */
+  contractDetails?: string;
+  income?: string;
+  /**
+   * Visa, permit or residency status, and anything pending on it.
+   *
+   * Personal rather than household because it is per-body, and because a
+   * condition must travel with the income it qualifies (rule 3c). Held in the
+   * shared persona it would attach a member's visa transition to the other
+   * member's letter.
+   */
+  rightToWork?: string;
+}
+
+/**
  * A login. Credentials are personal; everything else a user can see belongs to
  * their household.
  *
@@ -46,6 +98,16 @@ export const users = sqliteTable(
      * columns cannot contradict each other — see `resolveWritingForm`.
      */
     grammaticalForm: text('grammatical_form', { enum: GRAMMATICAL_FORMS }),
+    /**
+     * This member's work, in `WorkProfile` shape.
+     *
+     * Nullable, and the null is load-bearing: it means the question has never
+     * been put to this account, which is what sends an existing member to the
+     * work screen after this shipped. An object — even one whose text fields are
+     * all blank — means they answered, so someone with nothing to add is asked
+     * once and never again.
+     */
+    workProfile: text('work_profile', { mode: 'json' }).$type<WorkProfile>(),
     householdId: text('household_id')
       .notNull()
       .references(() => households.id, { onDelete: 'cascade' }),

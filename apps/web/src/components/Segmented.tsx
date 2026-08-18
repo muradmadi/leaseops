@@ -36,6 +36,11 @@ interface SegmentedProps<T extends string> {
   onChange: (value: T) => void;
   options: { value: T; label: string }[];
   accent?: keyof typeof ACCENT;
+  /**
+   * `grid` wraps onto two columns. Needed past three or four options, which do
+   * not fit a single row at 360px without the labels truncating.
+   */
+  layout?: 'row' | 'grid';
 }
 
 export default function Segmented<T extends string>({
@@ -44,9 +49,14 @@ export default function Segmented<T extends string>({
   onChange,
   options,
   accent = 'emerald',
+  layout = 'row',
 }: SegmentedProps<T>) {
   return (
-    <div role="radiogroup" aria-label={name} className="flex gap-2">
+    <div
+      role="radiogroup"
+      aria-label={name}
+      className={layout === 'grid' ? 'grid grid-cols-2 sm:grid-cols-3 gap-2' : 'flex gap-2'}
+    >
       {options.map((option) => {
         const selected = value === option.value;
         return (

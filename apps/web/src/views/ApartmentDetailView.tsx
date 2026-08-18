@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { Link, useParams } from 'wouter';
 import AddListingModal from '../components/AddListingModal';
+import OutreachAuthorControl from '../components/OutreachAuthorControl';
 import {
   useApartment,
   useAiReview,
@@ -329,6 +330,13 @@ export default function ApartmentDetailView() {
                   </div>
                 </div>
               </div>
+
+              {/* Whose voice this listing's outreach is written in */}
+              <OutreachAuthorControl
+                apartmentId={apartment.id}
+                outreachAuthorId={apartment.outreachAuthorId}
+                createdBy={apartment.createdBy}
+              />
 
               {/* Pursuit state — separate from the score, which is a measurement */}
               <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">

@@ -46,6 +46,27 @@ export async function upsertProfile(data: NewUserProfile): Promise<UserProfile> 
 }
 
 /**
+ * Writes only the household's shared tenant facts.
+ *
+ * Narrow on purpose. `upsertProfile` takes the whole row and every field of the
+ * API payload has a default, so a caller sending just the persona through it
+ * would silently reset the location, the budget and all 32 feature weights. The
+ * work screen is the one place where a member edits the persona without having
+ * the rest of the criteria in hand, so it gets a write that cannot reach them.
+ */
+export async function updateTenantPersona(
+  householdId: string,
+  tenantPersona: string
+): Promise<UserProfile | undefined> {
+  const [updated] = await db
+    .update(userProfiles)
+    .set({ tenantPersona, updatedAt: new Date() })
+    .where(eq(userProfiles.householdId, householdId))
+    .returning();
+  return updated;
+}
+
+/**
  * Deletes a household's profile, returning the deleted record.
  */
 export async function removeProfileByHouseholdId(householdId: string): Promise<UserProfile | undefined> {

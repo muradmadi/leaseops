@@ -8,6 +8,8 @@ import LoginView from './views/LoginView.tsx';
 import SettingsView from './views/SettingsView.tsx';
 import { useAuth } from './lib/useAuth';
 import { useProfile } from './lib/useProfile';
+import { useHousehold } from './lib/useHousehold';
+import AboutYouView from './views/AboutYouView.tsx';
 
 function FullScreenLoader({ message }: { message: string }) {
   return (
@@ -32,6 +34,8 @@ function FullScreenLoader({ message }: { message: string }) {
  */
 function AuthenticatedApp() {
   const { data: profile, isLoading, isError } = useProfile();
+  const { data: auth } = useAuth();
+  const { data: household, isLoading: householdLoading } = useHousehold();
 
   if (isLoading) {
     return <FullScreenLoader message="Loading your criteria..." />;
@@ -43,11 +47,34 @@ function AuthenticatedApp() {
     return <OnboardingView />;
   }
 
+  /**
+   * A member who has never answered the work question is stopped here.
+   *
+   * The criteria are the household's and were filled in once, so someone who
+   * joined an established household reached the dashboard without ever being
+   * asked anything about themselves — and their outreach was then written from
+   * the other member's job. `workProfile === null` is exactly "never asked";
+   * having answered, even with every box blank, they are never stopped again.
+   *
+   * A household that cannot be loaded does not block: an unanswerable question
+   * is not a reason to lock someone out of their own pipeline.
+   */
+  if (householdLoading) {
+    return <FullScreenLoader message="Loading your household..." />;
+  }
+  const me = household?.members.find((member) => member.id === auth?.user?.id);
+  if (me && !me.workProfile?.employmentStatus) {
+    return <AboutYouView required />;
+  }
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-sans antialiased selection:bg-emerald-500/20 selection:text-emerald-400">
       <Switch>
         <Route path="/" component={DashboardView} />
         <Route path="/onboarding" component={OnboardingView} />
+        <Route path="/about-you">
+          <AboutYouView required={false} />
+        </Route>
         <Route path="/apartments/:id/chat" component={ChatView} />
         <Route path="/apartments/:id" component={ApartmentDetailView} />
         <Route path="/settings" component={SettingsView} />

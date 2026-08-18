@@ -20,11 +20,39 @@ export interface ProfileData {
   tenantPersona: string;
 }
 
-export function useProfile() {
+/**
+ * @param live Poll while a screen shares this row with the other member. The
+ * work screen uses it so a partner's save shows up without a reload; nothing
+ * else needs it, since the criteria only change when you change them.
+ */
+export function useProfile(live = false) {
   return useQuery<ProfileData, Error>({
     queryKey: ['profiles', 'me'],
     queryFn: () => apiFetch<ProfileData>('/profiles/me'),
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    staleTime: live ? 0 : 5 * 60 * 1000,
+    refetchInterval: live ? 10 * 1000 : false,
+  });
+}
+
+/**
+ * Saves the household's shared tenant facts on their own.
+ *
+ * Deliberately not `useUpdateProfile`: that sends the whole profile, and every
+ * field of the API payload has a default, so a partial write there would reset
+ * the location, the budget and all 32 feature weights.
+ */
+export function useUpdateHouseholdPersona() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (tenantPersona: string) =>
+      apiFetch<ProfileData>('/profiles/me/persona', {
+        method: 'PATCH',
+        body: JSON.stringify({ tenantPersona }),
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(['profiles', 'me'], data);
+    },
   });
 }
 

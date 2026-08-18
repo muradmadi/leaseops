@@ -17,13 +17,32 @@ import { completeJson, untrustedBlock, untrustedSpan, UNTRUSTED_NOTICE, type Llm
  */
 export type LlmCredentials = LlmConfig | null;
 
+/**
+ * One member of the household, as the draft must talk about them.
+ *
+ * Work is per person and everything else in the persona is shared, because a job,
+ * its contract, its income and the right to work behind it are facts about one
+ * body. Exactly one person is the author: the message says "I" about them and
+ * names the others for their own work, so the same household produces a letter in
+ * Paulie's voice when Paulie added the listing and in Murad's when he did.
+ */
+export interface PersonaPerson {
+  name: string;
+  /** The member whose voice this message is written in. Exactly one, when known. */
+  isAuthor: boolean;
+  /** Human-readable employment status, already resolved from the stored enum. */
+  employmentStatus?: string;
+  occupation?: string;
+  /** The member's own wording. Never normalised into a legal term — rule 3d. */
+  contractDetails?: string;
+  income?: string;
+  rightToWork?: string;
+}
+
 export interface TenantPersona {
-  professionAndIncome?: string;
   moveInTimeline?: string;
   householdComposition?: string;
   pets?: string;
-  /** Contract type and tenure — the strongest signal against non-payment fear. */
-  contractType?: string;
   financialGuarantees?: string;
   documentsReady?: string;
   /** Intended tenure, which answers the landlord's churn worry directly. */
@@ -43,6 +62,11 @@ export interface TenantPersona {
    * this; blank means nobody answered and the draft must avoid gendered wording.
    */
   writingForms?: string;
+  /**
+   * Who is moving in and what each of them does, author first. Empty only when
+   * the household has no members at all, which cannot happen through the app.
+   */
+  people?: PersonaPerson[];
 }
 
 export const OutreachMessageSchema = z.object({
@@ -118,8 +142,6 @@ ${untrustedContent.trim()}
  */
 function buildStatedFacts(persona: TenantPersona): string {
   const facts: [string, string | undefined][] = [
-    ['Profession and income', persona.professionAndIncome],
-    ['Employment contract', persona.contractType],
     ['Financial guarantees available', persona.financialGuarantees],
     ['Documents ready to send', persona.documentsReady],
     ['Household', persona.householdComposition],
@@ -135,14 +157,66 @@ function buildStatedFacts(persona: TenantPersona): string {
     .join('\n');
 }
 
-/** How many persona fields the tenant actually filled in. */
+/**
+ * Who is moving in and what each of them does — the block that decides whose
+ * letter this is.
+ *
+ * The author is marked in words rather than by position, because position is the
+ * kind of thing a model silently reorders. Everyone else is marked as explicitly
+ * not the writer: the failure this exists to prevent is one member's job being
+ * narrated in the first person by the other member.
+ */
+function buildPeopleFacts(persona: TenantPersona): string {
+  const people = persona.people || [];
+  if (people.length === 0) return '';
+
+  return people
+    .map((person) => {
+      const work = [
+        person.employmentStatus,
+        person.occupation?.trim(),
+        person.contractDetails?.trim() ? `contract: ${person.contractDetails.trim()}` : '',
+        person.income?.trim() ? `income: ${person.income.trim()}` : '',
+        person.rightToWork?.trim() ? `right to work: ${person.rightToWork.trim()}` : '',
+      ]
+        .filter((v) => v && v.length > 0)
+        .join('. ');
+
+      const role = person.isAuthor
+        ? 'YOU, the person writing this message'
+        : 'also moving in — never write "I" or "me" about this person';
+
+      // "Nothing stated" rather than an omitted line: the person is real and
+      // moving in either way, and a missing line reads as a missing person.
+      return `- ${person.name} (${role}): ${work || 'no work details stated'}`;
+    })
+    .join('\n');
+}
+
+/**
+ * How many facts the tenant actually filled in, shared and personal together.
+ *
+ * Counted across both blocks deliberately. Work moved out of the shared persona
+ * when it became per-member, and a count that ignored it would quietly raise the
+ * bar for showing the listing's requirements — see `MIN_FACTS_FOR_REQUIREMENTS`.
+ */
 function countStatedFacts(persona: TenantPersona): number {
-  return [
-    persona.professionAndIncome, persona.contractType, persona.financialGuarantees,
+  const shared = [
+    persona.financialGuarantees,
     persona.documentsReady, persona.householdComposition, persona.pets,
     persona.moveInTimeline, persona.intendedLeaseLength, persona.viewingAvailability,
     persona.additionalNotes,
   ].filter((v) => v && v.trim().length > 0).length;
+
+  const personal = (persona.people || []).reduce(
+    (total, person) =>
+      total +
+      [person.employmentStatus, person.occupation, person.contractDetails, person.income, person.rightToWork]
+        .filter((v) => v && v.trim().length > 0).length,
+    0
+  );
+
+  return shared + personal;
 }
 
 /**
@@ -177,8 +251,8 @@ HOW TO WRITE IT
 2b-i. This rule only applies when the tenant facts above actually state a financial offer. If they state none, say nothing about deposits, guarantees, guarantors or upfront payment — do not produce a partial offer out of nothing.
 3. Use only the stated tenant facts. Invent nothing: no income, no contract, no references, no dates that are not listed above.
 3-ii. The requirements list is the most dangerous source of invention in this prompt. When the tenant facts are sparse, there is a strong pull to answer the owner point by point and produce a tenant who happens to satisfy everything asked. Resist it completely. A requirement with no matching tenant fact is simply not addressed. If that leaves a two-line message, send the two-line message.
-3-i. Absence is not an invitation. If a subject does not appear in the tenant facts — employment, income, deposit, guarantee, documents, pets, smoking, household, tenure — the message must not mention that subject at all, in any form. Do not reason about what a tenant like this probably has, do not fill a gap because the listing asks about it, and do not reuse a number or an arrangement that appears anywhere in these instructions. Every figure and commitment in your message must be traceable to a line under WHAT THE TENANT HAS ACTUALLY STATED. A short message built from three real facts beats a complete-looking one built from eight invented ones — the invented version collapses the moment documents are requested.
-3a. The profession, contract and income belong to the person writing, and to nobody else. If the household has other adults, never attribute a job, a salary or a contract to them — say "we are two adults" and keep the employment details in the first person singular.
+3-i. Absence is not an invitation. If a subject does not appear in the tenant facts — employment, income, deposit, guarantee, documents, pets, smoking, household, tenure — the message must not mention that subject at all, in any form. Do not reason about what a tenant like this probably has, do not fill a gap because the listing asks about it, and do not reuse a number or an arrangement that appears anywhere in these instructions. Every figure and commitment in your message must be traceable to a line under WHAT THE TENANT HAS ACTUALLY STATED or under WHO IS MOVING IN AND WHAT THEY DO. A short message built from three real facts beats a complete-looking one built from eight invented ones — the invented version collapses the moment documents are requested.
+3a. Employment, contract, income and immigration status belong to the one person they are listed against under WHO IS MOVING IN AND WHAT THEY DO. Write "I" only about the person marked as the writer; name any other member when you state their work. Never move a fact from one person to another, never give a member a job that is not listed on their own line, and never merge two incomes into a single figure. Where a member's line says no work details are stated, say nothing about what they do — "we are two adults, and I ..." is the whole of it. This is the most consequential rule in the prompt: the household shares one pipeline but the person writing has their own name on the portal, and a letter that narrates someone else's job in the first person is false about the sender in the first line the owner reads.
 3b. State offers exactly as given. If the tenant can provide one thing OR another, write it as a choice; never merge them into both, never upgrade an offer, and never restate an amount as something it is not.
 3b-i. Never mention paying the first month's rent. Every tenant pays it, so offering it reads as padding and makes the rest of the message look thinner. The same goes for any other ordinary obligation dressed up as a concession.
 3c. A condition attached to a fact travels with the fact, always. If income, hours or a contract depend on something pending — a visa, a probation period, a start date — say so in the same breath. A future salary quoted without its condition reads as invention, and the condition usually explains the number and makes it credible.
@@ -189,7 +263,7 @@ HOW TO WRITE IT
 5. No filler. The message ends on the viewing question or the sign-off — nothing after it. Cut every variant of "I look forward to hearing from you", "I await your reply", "thanks in advance", "I hope this message finds you well". In Spanish this specifically means never writing "quedo a la espera de su respuesta", "quedamos a la espera", or "gracias de antemano".
 6. Do not describe yourself with adjectives like ideal, perfect, responsible, reliable or serious. State facts and let them speak. Concrete behaviour is a fact and belongs in the message — "no parties or guests" and "we both work from home" tell an owner something checkable; "we are quiet and respectful" tells them nothing.
 6a. Keep specifics that make a guarantee credible. "My parents will act as guarantors and can provide their bank statements" is materially stronger than "I can provide bank statements", and the difference is exactly what the owner is assessing.
-6b. Say who the other occupants are and what they do, in a few words. "Two adults" alone invites the question the message exists to pre-empt.
+6b. Say who the other occupants are and what they do, in a few words, taking each one's work from their own line under WHO IS MOVING IN AND WHAT THEY DO. "Two adults" alone invites the question the message exists to pre-empt — but a member with no work stated stays at "two adults" rather than being given one.
 7. Close by proposing a viewing, using the stated availability if there is one. Ask no questions about the property. The one thing this message is for is getting seen in person, and every question you add is a reason for the owner to answer later instead of booking you now. Anything you need to know about cupboards, appliances or fittings is answered by standing in the flat. End by asking for a viewing and nothing else.
 8. Under 110 words. Shorter is better. No bullet lists, no headings.
 9. Sign off with exactly the SIGN-OFF given below. If it says NONE, end without a name and never invent one..
@@ -221,6 +295,7 @@ export async function draftOutreachMessage(
   const requirements = resolveRequirements(persona, analysis);
 
   const statedFacts = buildStatedFacts(persona);
+  const peopleFacts = buildPeopleFacts(persona);
 
   const requirementsBlock = requirements.length
     ? `WHAT THIS LISTING ASKS FOR\nThis is what the OWNER wants. It is not a form to fill in and not a description of the tenant. Answer a line only where the tenant facts below independently satisfy it.\n${requirements.map((r) => `- ${r}`).join('\n')}`
@@ -228,11 +303,19 @@ export async function draftOutreachMessage(
 
   if (!credentials) {
     console.log(`[LLM Service] Using offline stub for outreach message generation.`);
+    // Offline, the author's own work is the only work stated. Naming the other
+    // member's job here would mean composing a sentence about them, and this
+    // path has no model to get the attribution right.
+    const author = (persona.people || []).find((p) => p.isAuthor);
+    const authorWork = [author?.occupation?.trim(), author?.contractDetails?.trim()]
+      .filter((v) => v && v.length > 0)
+      .join('. ');
+
     const lines = [
       `Hello,`,
       ``,
       `I am interested in ${listingTitle} and would like to arrange a viewing.`,
-      ...(persona.professionAndIncome ? [``, persona.professionAndIncome.trim()] : []),
+      ...(authorWork ? [``, authorWork] : []),
       ...(persona.financialGuarantees ? [persona.financialGuarantees.trim()] : []),
       ...(persona.viewingAvailability ? [``, `I can view: ${persona.viewingAvailability.trim()}`] : []),
       ``,
@@ -256,7 +339,11 @@ SIGN-OFF: ${persona.signOffName?.trim() || 'NONE'}
 
 ${requirementsBlock}
 
+WHO IS MOVING IN AND WHAT THEY DO — work belongs to the named person and to nobody else
+${peopleFacts || '- Not stated. Say nothing about anyone\'s job, contract, income or immigration status.'}
+
 WHAT THE TENANT HAS ACTUALLY STATED
+These are shared facts, true of the whole household whoever is writing.
 ${statedFacts || '- Nothing beyond wanting to view the property.'}
 
 
@@ -308,7 +395,7 @@ HOW TO WRITE IT
 3-i. Absence is not an invitation. If the owner asks about a subject the tenant facts do not cover — a payslip, a net figure, a guarantor, a deposit, a date — you do not have it. Say what you can actually do and leave the rest for them to confirm. A question about a subject must never become an answer implying you have it, and never reuse a number or an arrangement that appears anywhere in these instructions.
 3-ii. A demand is not met by promising you will meet it. Where the owner insists on something the tenant facts do not support — being somewhere in person, a date, a form of guarantee, a document — you cannot invent the capability just because they asked firmly. Availability, travel and attendance are facts like any other. State the true position in a few words, and where the tenant facts name an alternative — someone who can attend in their place, a video call, a document that answers the same worry — offer that and let the owner decide. Conceding on paper to something the tenant has said they cannot do is the worst outcome available: it wastes the viewing and is found out at the worst moment.
 3-iii. A number the tenant has not stated cannot be computed, estimated or converted. If they gave a gross annual figure and the owner asks for a net monthly one, give the figure you have, name it for what it is, and offer the document that proves it. Never do the arithmetic yourself.
-3a. The profession, contract and income belong to the person writing, and to nobody else. If the household has other adults, never attribute a job, a salary or a contract to them — keep employment details in the first person singular.
+3a. Employment, contract, income and immigration status belong to the one person they are listed against under WHO IS MOVING IN AND WHAT THEY DO. Write "I" only about the person marked as the writer, and name any other member when you state their work. Never move a fact from one person to another and never give a member a job that is not on their own line. The writer does not change mid-thread: whoever is marked here wrote the earlier messages in this conversation too, so a reply that switches to another member's job contradicts what the owner has already read.
 3b. State offers exactly as given. If the tenant can provide one thing OR another, write it as a choice; never merge them into both, never upgrade an offer, and never restate an amount as something it is not.
 3b-i. Never offer to pay the first month's rent as though it were a concession. Every tenant pays it, and dressing up an ordinary obligation makes the rest of the reply look thinner.
 3c. A condition attached to a fact travels with the fact, always. If income, hours or a contract depend on something pending — a visa, a probation period, a start date — say so in the same breath. A future salary quoted without its condition reads as invention, and the condition usually explains the number and makes it credible.
@@ -410,6 +497,7 @@ export async function suggestChatReply(
 
   const transcript = buildChatTranscript(chatHistory);
   const statedFacts = buildStatedFacts(persona);
+  const peopleFacts = buildPeopleFacts(persona);
   const requirements = resolveRequirements(persona, context?.analysis);
 
   const requirementsBlock = requirements.length
@@ -435,7 +523,11 @@ SIGN-OFF: ${persona.signOffName?.trim() || 'NONE'}
 
 ${requirementsBlock}
 ${shortfallBlock ? `\n${shortfallBlock}\n` : ''}
+WHO IS MOVING IN AND WHAT THEY DO — work belongs to the named person and to nobody else
+${peopleFacts || '- Not stated. Say nothing about anyone\'s job, contract, income or immigration status.'}
+
 WHAT THE TENANT HAS ACTUALLY STATED
+These are shared facts, true of the whole household whoever is writing.
 ${statedFacts || '- Nothing beyond wanting to view the property.'}
 
 CONVERSATION SO FAR

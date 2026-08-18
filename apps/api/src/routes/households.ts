@@ -6,6 +6,7 @@ import {
   updateLlmKeyApiSchema,
   updateLlmModelApiSchema,
   updateMeApiSchema,
+  updateWorkProfileApiSchema,
   findHouseholdById,
   findHouseholdByJoinCode,
   findHouseholdMembers,
@@ -13,6 +14,7 @@ import {
   updateHouseholdName,
   updateUserHousehold,
   updateUserMember,
+  updateUserWorkProfile,
   toPublicUser,
   toPublicHousehold,
   removeHousehold,
@@ -76,6 +78,24 @@ const householdsRouter = new Hono<AuthEnv>()
       gender,
       grammaticalForm: gender === 'other' ? grammaticalForm : null,
     });
+    if (!updated) {
+      return c.json({ message: 'Account not found', statusCode: 404 }, 404);
+    }
+    return c.json(toPublicUser(updated));
+  })
+
+  /**
+   * PATCH /api/households/me/work
+   * Your own work: what you do, your contract, your income, your right to work.
+   *
+   * Separate from the household's shared persona because it writes your user row
+   * and nobody else's — both partners can fill the work screen in at the same
+   * moment without either overwriting the other. Saving it is also what closes
+   * the work gate for this account, which is why `employmentStatus` is required:
+   * an answer everyone can give, so nobody is trapped on the screen.
+   */
+  .patch('/me/work', zValidator('json', updateWorkProfileApiSchema), async (c) => {
+    const updated = await updateUserWorkProfile(c.get('user').id, c.req.valid('json'));
     if (!updated) {
       return c.json({ message: 'Account not found', statusCode: 404 }, 404);
     }

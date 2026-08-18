@@ -11,14 +11,14 @@ describe('resolvePersona', () => {
     const persona = resolvePersona(
       profile({
         tenantPersona: JSON.stringify({
-          professionAndIncome: 'Senior engineer, stable salary',
+          documentsReady: 'Payslips, contract, passport',
           pets: 'No pets',
         }),
         targetLanguage: 'German',
       })
     );
 
-    expect(persona.professionAndIncome).toBe('Senior engineer, stable salary');
+    expect(persona.documentsReady).toBe('Payslips, contract, passport');
     expect(persona.pets).toBe('No pets');
     expect(persona.targetLanguage).toBe('German');
   });

@@ -8,13 +8,17 @@ Root `../../CLAUDE.md` and `../CLAUDE.md` apply.
 ```
 src/App.tsx              Auth gate + wouter routes
 src/views/               One file per screen: Dashboard, ApartmentDetail, Chat,
-                         Onboarding, Settings, Login
+                         Onboarding, AboutYou, Settings, Login
 src/components/          AddListingModal — the multi-step evaluation wizard
+                         WorkProfileFields / HouseholdPersonaFields — the two
+                         halves of the tenant story, shared by onboarding and
+                         the AboutYou gate so the questions cannot drift
 src/lib/
   api.ts                 apiFetch wrapper; throws on non-2xx
   useApartments.ts       Listing queries/mutations + the SSE subscription
   useAuth.ts             Session state
   useProfile.ts          Onboarding profile
+  persona.ts             The household persona JSON shape, parsed tolerantly
   preferenceMatrixData.ts  The 32 features shown during onboarding
 ```
 
@@ -89,6 +93,27 @@ container. **Never** `dangerouslySetInnerHTML` — this is untrusted content.
 
 ## Gotchas
 
+- **`AboutYouView` is a gate, not a page.** `App.tsx` renders it in place of
+  everything else when the signed-in member's `workProfile` is null — the
+  criteria belong to the household and were filled in once, so a partner who
+  joined an established household otherwise reached the dashboard without ever
+  being asked anything about themselves, and their outreach was written from the
+  other member's job. Answering is what closes it, and `employmentStatus` is the
+  answer that counts because every applicant has one, "not working" included.
+  Never preselect it — same reasoning as the gender control in `Segmented`.
+- **`OutreachAuthorControl` must resolve in the same order the API does** —
+  `outreachAuthorId`, then `createdBy`, then the first (oldest) member. It shows
+  who the next draft speaks as, so a control that resolved differently from
+  `resolveApartmentAuthorId` would state one name while the message used another.
+  It hides itself in a one-member household, where there is no choice to make.
+- **The work screen has two saves and they must stay separate.** The work block
+  writes your own user row (`PATCH /households/me/work`); the shared block writes
+  the household's single profile row (`PATCH /profiles/me/persona`). Only the
+  second can collide, which is why the shared half is prefilled for review rather
+  than required, and why an incoming change raises a banner instead of replacing
+  what is under the cursor. **Do not save the persona through `useUpdateProfile`**
+  — that sends the whole profile and every field of its payload has a default, so
+  a partial write there resets the location, the budget and all 32 weights.
 - **`messages.sender` has three values and `ChatView` must branch on all three.**
   It was `if (landlord) … else …`, so a message you typed fell into the AI branch
   and rendered as "AI Suggested Reply" with a bot avatar. That is not cosmetic:

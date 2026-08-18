@@ -1,5 +1,7 @@
 /**
- * Builds the outreach sign-off from a household's members.
+ * Turns a household's members into the parts of a draft that are about people:
+ * the sign-off, the grammatical form to write each member in, and who does what
+ * for a living.
  *
  * The name is derived, never typed: it comes from what each member is already
  * called in the household, so it cannot drift out of sync with the account. Two
@@ -8,7 +10,8 @@
  * the landlord's language and an English "and" in the middle of a Spanish letter
  * reads as a template.
  */
-import type { Gender, GrammaticalForm } from '@leaseops/db';
+import type { Gender, GrammaticalForm, EmploymentStatus, WorkProfile } from '@leaseops/db';
+import type { PersonaPerson } from './llm';
 
 /** Conjunction used to join the final two names, keyed by onboarding language. */
 const CONJUNCTIONS: Record<string, string> = {
@@ -39,11 +42,30 @@ function spanishConjunction(nextName: string): string {
 }
 
 export interface SignOffMember {
+  id?: string;
   displayName?: string | null;
   username?: string | null;
   gender?: Gender | null;
   grammaticalForm?: GrammaticalForm | null;
+  workProfile?: WorkProfile | null;
 }
+
+/**
+ * How each employment status is put to a landlord.
+ *
+ * Prose rather than the stored token, because the token is a database value and
+ * "student_working" is not a sentence. Stated plainly and without softening:
+ * `not_working` says so, since an owner finds out anyway and rule 2a wants the
+ * true position said in a few words rather than hidden.
+ */
+const EMPLOYMENT_STATUS_PHRASES: Record<EmploymentStatus, string> = {
+  employed: 'employed',
+  self_employed: 'self-employed',
+  student: 'a student',
+  student_working: 'a student who also works',
+  retired: 'retired',
+  not_working: 'not currently working',
+};
 
 /** How the draft must inflect first-person wording about a member. */
 export type WritingForm = GrammaticalForm;
@@ -82,6 +104,45 @@ export function buildWritingForms(members: SignOffMember[]): string {
     );
 
   return lines.join('\n');
+}
+
+/**
+ * Describes who is moving in and what each of them does, with exactly one of
+ * them marked as the person writing.
+ *
+ * `authorId` is the member who entered the listing. An id that matches nobody —
+ * an older listing with no author recorded, or an author who has since left the
+ * household — falls back to the first member, who is the oldest account and
+ * therefore the one whose job the shared persona used to hold. The fallback is
+ * never "nobody": a draft with no author marked has no first person at all, and
+ * the model would pick one.
+ *
+ * Members with no name are dropped for the same reason they are dropped from the
+ * sign-off — there is nothing truthful to call them in a letter.
+ */
+export function buildPersonaPeople(
+  members: SignOffMember[],
+  authorId?: string | null
+): PersonaPerson[] {
+  const named = members.filter((m) => memberName(m));
+  if (named.length === 0) return [];
+
+  const author = named.find((m) => m.id && m.id === authorId) ?? named[0];
+
+  return named.map((member) => {
+    const work = member.workProfile || {};
+    return {
+      name: memberName(member),
+      isAuthor: member === author,
+      employmentStatus: work.employmentStatus
+        ? EMPLOYMENT_STATUS_PHRASES[work.employmentStatus]
+        : undefined,
+      occupation: work.occupation?.trim() || undefined,
+      contractDetails: work.contractDetails?.trim() || undefined,
+      income: work.income?.trim() || undefined,
+      rightToWork: work.rightToWork?.trim() || undefined,
+    };
+  });
 }
 
 /**

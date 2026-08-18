@@ -83,6 +83,19 @@ export const setApartmentStageApiSchema = z.object({
   pipelineStage: z.enum(PIPELINE_STAGES),
 });
 
+/**
+ * Who this listing's outreach is written as.
+ *
+ * `null` clears the override and lets the listing follow whoever entered it. The
+ * id is checked against the caller's own household in the route — a member id
+ * from the request body is untrusted exactly like a household id would be.
+ */
+export const setApartmentAuthorApiSchema = z.object({
+  authorId: z.string().trim().min(1).nullable(),
+});
+
+export type SetApartmentAuthorPayload = z.infer<typeof setApartmentAuthorApiSchema>;
+
 export const updateApartmentStatusApiSchema = z.object({
   status: z.enum(['UNPROCESSED', 'QUALIFIED', 'DISQUALIFIED', 'ARCHIVED']),
 });

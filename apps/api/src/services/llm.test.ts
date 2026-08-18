@@ -17,7 +17,7 @@ describe('LLM Service & Security', () => {
       'Sunny Apartment',
       'Beautiful 2-bedroom in city center.',
       {
-        professionAndIncome: 'Software engineer with stable income.',
+        people: [{ name: 'Sam', isAuthor: true, occupation: 'Software engineer with stable income.' }],
         householdComposition: 'Single professional',
         targetLanguage: 'English',
       }
@@ -30,7 +30,7 @@ describe('LLM Service & Security', () => {
 
   it('signs the outreach draft with the persona sign-off name', async () => {
     const res = await draftOutreachMessage(null, 'Sunny Apartment', 'Beautiful 2-bedroom in city center.', {
-      professionAndIncome: 'Software engineer with stable income.',
+      people: [{ name: 'Sam', isAuthor: true, occupation: 'Software engineer with stable income.' }],
       targetLanguage: 'English',
       signOffName: 'Sam and Alex',
     });
@@ -40,7 +40,7 @@ describe('LLM Service & Security', () => {
 
   it('ends without a signature rather than inventing one when no sign-off name is set', async () => {
     const res = await draftOutreachMessage(null, 'Sunny Apartment', 'Beautiful 2-bedroom in city center.', {
-      professionAndIncome: 'Software engineer with stable income.',
+      people: [{ name: 'Sam', isAuthor: true, occupation: 'Software engineer with stable income.' }],
       targetLanguage: 'English',
     });
 
@@ -225,7 +225,7 @@ describe('Initial outreach', () => {
       'Piso reformado.',
       {
         targetLanguage: 'English',
-        professionAndIncome: 'Nurse on a permanent contract',
+        people: [{ name: 'Sam', isAuthor: true, occupation: 'Nurse on a permanent contract' }],
         viewingAvailability: 'Saturday mornings',
         signOffName: 'Sam',
       },
@@ -233,6 +233,25 @@ describe('Initial outreach', () => {
     );
     expect(res.body).toContain('Nurse on a permanent contract');
     expect(res.body).toContain('Saturday mornings');
+  });
+
+  it('states only the author\'s work, never the other member\'s', async () => {
+    const { draftOutreachMessage } = await import('./llm');
+    const res = await draftOutreachMessage(null, 'Piso en Ruzafa', 'Piso reformado.', {
+      targetLanguage: 'English',
+      signOffName: 'Murad and Paulie',
+      people: [
+        { name: 'Murad', isAuthor: false, occupation: 'MarTech Specialist at LeadTech' },
+        { name: 'Paulie', isAuthor: true, occupation: 'Masters student at Animum' },
+      ],
+    });
+
+    // Offline there is no model to attribute a second person's job correctly, so
+    // the draft states the writer's own work and stops. What it must never do is
+    // put the other member's job in the first person, which is the whole defect
+    // per-member work exists to fix.
+    expect(res.body).toContain('Masters student at Animum');
+    expect(res.body).not.toContain('MarTech Specialist');
   });
 });
 
@@ -359,7 +378,7 @@ describe('Chat reply when offline', () => {
       null,
       'Piso en Ruzafa',
       [{ sender: 'landlord', text: '¿Cuanto gana al mes?' }],
-      { targetLanguage: 'Spanish', professionAndIncome: 'Enfermero' }
+      { targetLanguage: 'Spanish', people: [{ name: 'Sam', isAuthor: true, occupation: 'Enfermero' }] }
     );
 
     expect(res).toBeNull();

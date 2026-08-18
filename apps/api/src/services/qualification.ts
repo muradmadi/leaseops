@@ -20,7 +20,7 @@ import {
 } from '@leaseops/db';
 import { analyseListing, draftOutreachMessage, type TenantPersona } from './llm';
 import { resolveLlmConfig } from './anthropic';
-import { buildHouseholdSignOff, buildWritingForms } from './signoff';
+import { buildHouseholdSignOff, buildWritingForms, buildPersonaPeople } from './signoff';
 import { globalEvents } from './events';
 
 /**
@@ -50,16 +50,44 @@ export function resolvePersona(userProfile?: UserProfile | null): TenantPersona 
 }
 
 /**
- * The persona used for outreach, including the sign-off derived from who is
- * actually in the household.
+ * Whose voice a listing's messages are written in, in one place.
+ *
+ * Three sources in order, and the order is the whole design:
+ *
+ *   1. `outreachAuthorId` — an explicit choice, when someone has made one.
+ *   2. `createdBy` — whoever entered the listing, which is right almost always.
+ *   3. neither, on rows that predate both columns → the caller falls through to
+ *      the household's oldest member, whose job the shared persona used to hold.
+ *
+ * Every draft path goes through here so the outreach and the chat reply cannot
+ * end up disagreeing about who is writing the same conversation.
+ */
+export function resolveApartmentAuthorId(
+  apartment: Pick<Apartment, 'outreachAuthorId' | 'createdBy'>
+): string | null {
+  return apartment.outreachAuthorId ?? apartment.createdBy ?? null;
+}
+
+/**
+ * The persona used for outreach: the household's shared facts, the sign-off, and
+ * each member's own work with one of them marked as the author.
+ *
+ * The author is the member who entered the listing (`apartments.createdBy`),
+ * because that is the person sitting on the portal with an account in their own
+ * name. Everything downstream follows from it — the draft says "I" about them and
+ * names the others for their work. A null author, on a row that predates the
+ * column or one whose author has left the household, falls back to the oldest
+ * member: that is whose job the shared persona used to carry, so those drafts
+ * read as they always did rather than changing owner unannounced.
  *
  * The sign-off is not stored anywhere: it is rebuilt from the members' display
  * names on every draft, so a partner joining or changing their name is reflected
  * immediately instead of leaving a stale name on the letter.
  */
-export async function resolveHouseholdPersona(
+export async function resolveOutreachPersona(
   householdId: string,
-  userProfile?: UserProfile | null
+  userProfile?: UserProfile | null,
+  authorId?: string | null
 ): Promise<TenantPersona> {
   const persona = resolvePersona(userProfile);
 
@@ -71,6 +99,7 @@ export async function resolveHouseholdPersona(
     // Blank when nobody has answered; the prompt then tells the model to write
     // around gendered forms rather than pick one.
     persona.writingForms = buildWritingForms(members);
+    persona.people = buildPersonaPeople(members, authorId);
   } catch (err: any) {
     // An unsigned draft is recoverable; a failed draft is not.
     console.warn(`[Qualification] Could not resolve sign-off for household ${householdId}: ${err.message}`);
@@ -130,7 +159,11 @@ export async function maybeAutoDraftOutreach(
       await resolveLlmConfig(apartment.householdId),
       apartment.title,
       description,
-      await resolveHouseholdPersona(apartment.householdId, userProfile),
+      await resolveOutreachPersona(
+        apartment.householdId,
+        userProfile,
+        resolveApartmentAuthorId(apartment)
+      ),
       aiReview || ext.aiReview
     );
 

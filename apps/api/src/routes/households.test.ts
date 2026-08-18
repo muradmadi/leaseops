@@ -18,7 +18,7 @@ import {
 } from '@leaseops/db';
 import app from '../index';
 import { createTestAccount, authHeaders, TEST_PASSWORD, type TestAccount } from '../test-support';
-import { resolveHouseholdPersona } from '../services/qualification';
+import { resolveOutreachPersona, resolveApartmentAuthorId } from '../services/qualification';
 import { resolveLlmConfig } from '../services/anthropic';
 
 const accounts: TestAccount[] = [];
@@ -133,7 +133,7 @@ describe('Member grammatical form', () => {
     const members = await findHouseholdMembers(account.householdId);
     expect(members.map((m) => m.gender).sort()).toEqual(['female', 'male']);
 
-    const persona = await resolveHouseholdPersona(account.householdId, {
+    const persona = await resolveOutreachPersona(account.householdId, {
       targetLanguage: 'Spanish',
     } as any);
 
@@ -145,7 +145,7 @@ describe('Member grammatical form', () => {
     const account = await createTestAccount('gender_unset');
     accounts.push(account);
 
-    const persona = await resolveHouseholdPersona(account.householdId, {
+    const persona = await resolveOutreachPersona(account.householdId, {
       targetLanguage: 'Spanish',
     } as any);
 
@@ -314,5 +314,201 @@ describe('Household API key', () => {
     // Whose card is charged has nothing to do with who else comes and goes.
     const left = await findHouseholdById(origin.householdId);
     expect(left?.anthropicApiKey).toBe(FAKE_KEY);
+  });
+});
+
+/**
+ * Whose letter is this?
+ *
+ * Both partners share one pipeline, but each writes to landlords from their own
+ * account on the portal. The draft therefore says "I" about whoever entered the
+ * listing — the failure this replaces had one member's job narrated in the first
+ * person in the other member's message.
+ */
+describe('Per-member work and outreach authorship', () => {
+  it('saves your own work without touching the other member', async () => {
+    const account = await createTestAccount('work_own_row');
+    accounts.push(account);
+    const joined: any = await signupInto(account.joinCode, { displayName: 'Paulie' });
+
+    const res = await app.fetch(
+      new Request('http://localhost/api/households/me/work', {
+        method: 'PATCH',
+        headers: authHeaders(account),
+        body: JSON.stringify({
+          employmentStatus: 'employed',
+          occupation: 'MarTech Specialist at LeadTech, remote',
+          contractDetails: 'permanent, 30h',
+        }),
+      })
+    );
+    expect(res.status).toBe(200);
+
+    const me = await findUserById(account.userId);
+    expect(me?.workProfile?.occupation).toBe('MarTech Specialist at LeadTech, remote');
+    // The other member's row is untouched, which is what lets both fill the
+    // screen in at the same moment.
+    expect((await findUserById(joined.user.id))?.workProfile ?? null).toBeNull();
+  });
+
+  it('leaves the work profile null until the member answers, and non-null after', async () => {
+    const account = await createTestAccount('work_gate');
+    accounts.push(account);
+
+    // Null is the gate: it means the question has never been put to this account.
+    expect((await findUserById(account.userId))?.workProfile ?? null).toBeNull();
+
+    await app.fetch(
+      new Request('http://localhost/api/households/me/work', {
+        method: 'PATCH',
+        headers: authHeaders(account),
+        body: JSON.stringify({ employmentStatus: 'not_working' }),
+      })
+    );
+
+    // Answered, with nothing to add. Asked once, never again.
+    expect((await findUserById(account.userId))?.workProfile).toMatchObject({
+      employmentStatus: 'not_working',
+      occupation: '',
+    });
+  });
+
+  it('requires a status, since that is the answer that closes the gate', async () => {
+    const account = await createTestAccount('work_status_required');
+    accounts.push(account);
+
+    const res = await app.fetch(
+      new Request('http://localhost/api/households/me/work', {
+        method: 'PATCH',
+        headers: authHeaders(account),
+        body: JSON.stringify({ occupation: 'Nurse' }),
+      })
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('writes the message in the voice of the member who entered the listing', async () => {
+    const account = await createTestAccount('work_author');
+    accounts.push(account);
+    const joined: any = await signupInto(account.joinCode, { displayName: 'Paulie' });
+
+    await app.fetch(
+      new Request('http://localhost/api/households/me/work', {
+        method: 'PATCH',
+        headers: authHeaders(account),
+        body: JSON.stringify({ employmentStatus: 'employed', occupation: 'MarTech Specialist' }),
+      })
+    );
+    await app.fetch(
+      new Request('http://localhost/api/households/me/work', {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${joined.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ employmentStatus: 'student', occupation: 'Nursing degree' }),
+      })
+    );
+
+    const hers = await resolveOutreachPersona(account.householdId, null, joined.user.id);
+    expect(hers.people?.find((p) => p.isAuthor)).toMatchObject({
+      name: 'Paulie',
+      occupation: 'Nursing degree',
+    });
+
+    const his = await resolveOutreachPersona(account.householdId, null, account.userId);
+    expect(his.people?.find((p) => p.isAuthor)?.occupation).toBe('MarTech Specialist');
+
+    // Same household, same sign-off, same shared facts — only the voice moves.
+    expect(hers.signOffName).toBe(his.signOffName);
+    expect(hers.people).toHaveLength(2);
+  });
+});
+
+/**
+ * The writing-as override.
+ *
+ * The account and the person are not the same thing — partners log in on each
+ * other's phones, and one of them often writes to a landlord about a listing the
+ * other entered. `createdBy` records what happened; this changes who the message
+ * speaks as, without rewriting that record.
+ */
+describe('Choosing who a listing is written as', () => {
+  async function addListing(account: TestAccount, title: string) {
+    const res = await app.fetch(
+      new Request('http://localhost/api/apartments', {
+        method: 'POST',
+        headers: authHeaders(account),
+        body: JSON.stringify({ title, price: 1200, url: `https://example.com/${crypto.randomUUID()}` }),
+      })
+    );
+    expect(res.status).toBe(202);
+    return res.json() as Promise<any>;
+  }
+
+  function setAuthor(account: TestAccount, id: string, authorId: string | null) {
+    return app.fetch(
+      new Request(`http://localhost/api/apartments/${id}/author`, {
+        method: 'PATCH',
+        headers: authHeaders(account),
+        body: JSON.stringify({ authorId }),
+      })
+    );
+  }
+
+  it('overrides the voice without touching who entered the listing', async () => {
+    const account = await createTestAccount('author_override');
+    accounts.push(account);
+    const joined: any = await signupInto(account.joinCode, { displayName: 'Paulie' });
+    const listing = await addListing(account, 'Piso en Ruzafa');
+
+    const res = await setAuthor(account, listing.id, joined.user.id);
+    expect(res.status).toBe(200);
+
+    const updated: any = await res.json();
+    expect(updated.outreachAuthorId).toBe(joined.user.id);
+    // The record of who added it survives the change of voice.
+    expect(updated.createdBy).toBe(account.userId);
+
+    const persona = await resolveOutreachPersona(account.householdId, null, resolveApartmentAuthorId(updated));
+    expect(persona.people?.find((p) => p.isAuthor)?.name).toBe('Paulie');
+  });
+
+  it('falls back to the creator when the override is cleared', async () => {
+    const account = await createTestAccount('author_clear');
+    accounts.push(account);
+    const joined: any = await signupInto(account.joinCode, { displayName: 'Paulie' });
+    const listing = await addListing(account, 'Piso en Malasaña');
+
+    await setAuthor(account, listing.id, joined.user.id);
+    const cleared: any = await (await setAuthor(account, listing.id, null)).json();
+
+    expect(cleared.outreachAuthorId).toBeNull();
+    expect(resolveApartmentAuthorId(cleared)).toBe(account.userId);
+  });
+
+  it('refuses a member of another household', async () => {
+    const account = await createTestAccount('author_scope');
+    const stranger = await createTestAccount('author_stranger');
+    accounts.push(account, stranger);
+    const listing = await addListing(account, 'Piso en Benimaclet');
+
+    // The id arrives in a request body, so it is untrusted exactly as a
+    // householdId would be. Unchecked, this pulls another household's work
+    // details into this household's prompts.
+    const res = await setAuthor(account, listing.id, stranger.userId);
+    expect(res.status).toBe(400);
+
+    const listingRes = await app.fetch(
+      new Request(`http://localhost/api/apartments/${listing.id}`, { headers: authHeaders(account) })
+    );
+    expect(((await listingRes.json()) as any).outreachAuthorId).toBeNull();
+  });
+
+  it('does not let one household reassign another household\'s listing', async () => {
+    const account = await createTestAccount('author_cross');
+    const stranger = await createTestAccount('author_cross_other');
+    accounts.push(account, stranger);
+    const listing = await addListing(account, 'Piso en Campanar');
+
+    const res = await setAuthor(stranger, listing.id, stranger.userId);
+    expect(res.status).toBe(404);
   });
 });

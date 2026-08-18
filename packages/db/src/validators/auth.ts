@@ -1,6 +1,6 @@
 import { createSelectSchema, createInsertSchema } from 'drizzle-zod';
 import { z } from 'zod';
-import { userSessions, users, GENDERS, GRAMMATICAL_FORMS } from '../schema';
+import { userSessions, users, GENDERS, GRAMMATICAL_FORMS, EMPLOYMENT_STATUSES } from '../schema';
 
 /**
  * Full select validation schema derived from the Drizzle user_sessions table.
@@ -107,6 +107,25 @@ export const updateMeApiSchema = z.object({
 });
 
 export type UpdateMeApiPayload = z.infer<typeof updateMeApiSchema>;
+
+/**
+ * API payload for your own work details — the only part of the tenant story
+ * that is not shared with the household.
+ *
+ * `employmentStatus` is required and everything else optional, which is the
+ * whole gate: picking a status is something every applicant can do, and having
+ * picked one you have answered the question even if you left the boxes empty.
+ * A member with nothing to add is therefore asked once, not on every load.
+ */
+export const updateWorkProfileApiSchema = z.object({
+  employmentStatus: z.enum(EMPLOYMENT_STATUSES),
+  occupation: z.string().trim().max(300).default(''),
+  contractDetails: z.string().trim().max(500).default(''),
+  income: z.string().trim().max(300).default(''),
+  rightToWork: z.string().trim().max(500).default(''),
+});
+
+export type UpdateWorkProfileApiPayload = z.infer<typeof updateWorkProfileApiSchema>;
 
 /**
  * API payload for renaming the household from Settings.

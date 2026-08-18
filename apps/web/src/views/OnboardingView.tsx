@@ -10,28 +10,35 @@ import {
   Languages,
   Ruler,
   AlertCircle,
-  Briefcase,
-  Calendar,
   Users,
-  HeartHandshake,
-  FileText,
-  FileSignature,
-  ShieldCheck,
-  FolderCheck,
-  CalendarClock,
-  Clock,
   X,
   CheckCircle2
 } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
 import { useProfile, useUpdateProfile } from '../lib/useProfile';
-import { useHousehold } from '../lib/useHousehold';
+import { useHousehold, useUpdateWorkProfile } from '../lib/useHousehold';
+import { useAuth } from '../lib/useAuth';
 import { PREFERENCE_CATEGORIES, getDefaultFeatureWeights } from '../lib/preferenceMatrixData';
+import WorkProfileFields, {
+  EMPTY_WORK_PROFILE,
+  pruneToStatus,
+  type WorkDraft,
+} from '../components/WorkProfileFields';
+import HouseholdPersonaFields from '../components/HouseholdPersonaFields';
+import {
+  parseHouseholdPersona,
+  serialiseHouseholdPersona,
+  EMPTY_HOUSEHOLD_PERSONA,
+  type HouseholdPersona,
+} from '../lib/persona';
 
 export default function OnboardingView() {
   const [, setLocation] = useLocation();
   const { data: profile, isLoading } = useProfile();
+  const { data: auth } = useAuth();
   const updateProfileMutation = useUpdateProfile();
+  const saveWorkMutation = useUpdateWorkProfile();
+  const [workLoaded, setWorkLoaded] = useState(false);
 
   // Wizard Step State (1: Location & Logistics, 2: Financials, 3: Matrix Explained, 4: Preference Matrix, 5: Tenant Persona, 6: Summary)
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
@@ -51,22 +58,21 @@ export default function OnboardingView() {
   // even before it is saved.
   const { data: household } = useHousehold(targetLanguage);
   const derivedSignOff = household?.signOff ?? '';
+  const me = household?.members.find((member) => member.id === auth?.user?.id);
 
-  // Form State - Tenant Persona Bio Questions (Assembled into JSON at end of onboarding)
+  // Form State - Tenant facts, split by who they belong to.
+  //
   // These start empty on purpose. Pre-filling them with sample biography would put
   // invented facts about the user into their outreach messages the moment they hit
   // Save — see the no-fabrication rule in CLAUDE.md. Each field has a placeholder
   // showing the expected shape instead.
-  const [bioProfession, setBioProfession] = useState<string>('');
-  const [bioTimeline, setBioTimeline] = useState<string>('');
-  const [bioHousehold, setBioHousehold] = useState<string>('');
-  const [bioPets, setBioPets] = useState<string>('');
-  const [bioNotes, setBioNotes] = useState<string>('');
-  const [bioContract, setBioContract] = useState<string>('');
-  const [bioGuarantees, setBioGuarantees] = useState<string>('');
-  const [bioDocuments, setBioDocuments] = useState<string>('');
-  const [bioLeaseLength, setBioLeaseLength] = useState<string>('');
-  const [bioViewing, setBioViewing] = useState<string>('');
+  //
+  // `work` is this member's alone and saves to their own user row; `persona` is
+  // the household's and saves to the shared profile. The split is what lets the
+  // draft say "I" about whoever entered a listing rather than about whoever
+  // happened to fill this form in.
+  const [work, setWork] = useState<WorkDraft>(EMPTY_WORK_PROFILE);
+  const [persona, setPersona] = useState<HouseholdPersona>(EMPTY_HOUSEHOLD_PERSONA);
 
   // Requirements with a natural unit, kept as figures rather than 1-5 weights.
   const [sizeMin, setSizeMin] = useState<string>('');
@@ -104,28 +110,23 @@ export default function OnboardingView() {
       if (profile.featureWeights && Object.keys(profile.featureWeights).length > 0) {
         setWeights((prev) => ({ ...prev, ...profile.featureWeights }));
       }
-      if (profile.tenantPersona) {
-        try {
-          const parsed = JSON.parse(profile.tenantPersona);
-          if (parsed.professionAndIncome !== undefined) setBioProfession(parsed.professionAndIncome);
-          if (parsed.moveInTimeline !== undefined) setBioTimeline(parsed.moveInTimeline);
-          if (parsed.householdComposition !== undefined) setBioHousehold(parsed.householdComposition);
-          if (parsed.pets !== undefined) setBioPets(parsed.pets);
-          if (parsed.additionalNotes !== undefined) setBioNotes(parsed.additionalNotes);
-          if (parsed.contractType !== undefined) setBioContract(parsed.contractType);
-          if (parsed.financialGuarantees !== undefined) setBioGuarantees(parsed.financialGuarantees);
-          if (parsed.documentsReady !== undefined) setBioDocuments(parsed.documentsReady);
-          if (parsed.intendedLeaseLength !== undefined) setBioLeaseLength(parsed.intendedLeaseLength);
-          if (parsed.viewingAvailability !== undefined) setBioViewing(parsed.viewingAvailability);
-        } catch {
-          // Older profiles hold plain prose rather than the structured JSON that
-          // onboarding writes. Keep it as free-form notes; the remaining fields
-          // stay empty rather than being filled with something the user never said.
-          setBioNotes(profile.tenantPersona);
-        }
-      }
+      // Tolerates every shape the column has held, including plain prose, which
+      // is kept as free-form notes rather than discarded.
+      setPersona(parseHouseholdPersona(profile.tenantPersona));
     }
   }, [profile]);
+
+  // The work block belongs to this account, not to the profile, so it is filled
+  // from the member record instead.
+  useEffect(() => {
+    if (!me || workLoaded) return;
+    setWork({
+      ...EMPTY_WORK_PROFILE,
+      ...(me.workProfile || {}),
+      employmentStatus: me.workProfile?.employmentStatus || '',
+    });
+    setWorkLoaded(true);
+  }, [me, workLoaded]);
 
   const handleWeightChange = (featureId: string, val: number) => {
     setWeights((prev) => ({ ...prev, [featureId]: val }));
@@ -149,26 +150,15 @@ export default function OnboardingView() {
     return Number.isFinite(n) ? n : null;
   };
 
-  const getTenantPersonaJson = () => {
-    return JSON.stringify(
-      {
-        professionAndIncome: bioProfession,
-        moveInTimeline: bioTimeline,
-        householdComposition: bioHousehold,
-        pets: bioPets,
-        contractType: bioContract,
-        financialGuarantees: bioGuarantees,
-        documentsReady: bioDocuments,
-        intendedLeaseLength: bioLeaseLength,
-        viewingAvailability: bioViewing,
-        additionalNotes: bioNotes,
-      },
-      null,
-      2
-    );
-  };
-
   const handleSaveAndEnterPipeline = async () => {
+    // Two writes, two owners: the criteria and shared facts go to the household's
+    // profile row, the work to this member's own. The work save is first because
+    // it is the one that lets the app past the gate.
+    const pruned = pruneToStatus(work);
+    if (pruned.employmentStatus) {
+      await saveWorkMutation.mutateAsync({ ...pruned, employmentStatus: pruned.employmentStatus });
+    }
+
     await updateProfileMutation.mutateAsync({
       targetLocation,
       targetLanguage,
@@ -182,7 +172,7 @@ export default function OnboardingView() {
         bedrooms: { minimum: toNumberOrNull(bedroomsMin), ideal: toNumberOrNull(bedroomsIdeal) },
         bathrooms: { minimum: toNumberOrNull(bathroomsMin), ideal: toNumberOrNull(bathroomsIdeal) },
       },
-      tenantPersona: getTenantPersonaJson(),
+      tenantPersona: serialiseHouseholdPersona(persona),
     });
     setLocation('/');
   };
@@ -635,148 +625,23 @@ export default function OnboardingView() {
           </div>
         )}
 
-        {/* SCREEN 5: Tenant Persona & Bio Questionnaire */}
+        {/* SCREEN 5: Who you are — your work, then the household's shared facts */}
         {step === 5 && (
-          <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-300">
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Briefcase className="w-3.5 h-3.5 text-emerald-400" />
-                Profession and income source
-              </label>
-              <textarea
-                rows={3}
-                value={bioProfession}
-                onChange={(e) => setBioProfession(e.target.value)}
-                placeholder="e.g., Senior Software Engineer, remote with verifiable salary"
-                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
-              />
+          <div className="space-y-8 animate-in fade-in duration-300">
+            <WorkProfileFields value={work} onChange={setWork} />
+
+            <div className="border-t border-zinc-800 pt-8 space-y-2">
+              <h2 className="text-sm font-extrabold text-zinc-100 uppercase tracking-wider flex items-center gap-2">
+                <Users className="w-4 h-4 text-emerald-400" />
+                Shared with the household
+              </h2>
+              <p className="text-[11px] text-zinc-500 leading-relaxed">
+                Everything below goes into both of your messages. Write it so it stays true whoever
+                is sending — “Murad's parents can act as guarantors”, not “my parents”.
+              </p>
             </div>
 
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Calendar className="w-3.5 h-3.5 text-blue-400" />
-                Target move-in date and timeline
-              </label>
-              <textarea
-                rows={3}
-                value={bioTimeline}
-                onChange={(e) => setBioTimeline(e.target.value)}
-                placeholder="e.g., Immediate / within 30 days. Ready upon inspection."
-                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Users className="w-3.5 h-3.5 text-purple-400" />
-                Who will be living in the apartment?
-              </label>
-              <textarea
-                rows={3}
-                value={bioHousehold}
-                onChange={(e) => setBioHousehold(e.target.value)}
-                placeholder="e.g., Single professional adult, quiet lifestyle."
-                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <HeartHandshake className="w-3.5 h-3.5 text-amber-400" />
-                Pets or smoking habits
-              </label>
-              <textarea
-                rows={3}
-                value={bioPets}
-                onChange={(e) => setBioPets(e.target.value)}
-                placeholder="e.g., No pets, strictly non-smoker."
-                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
-              />
-            </div>
-
-
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <FileSignature className="w-3.5 h-3.5 text-emerald-400" />
-                Employment contract type and length
-              </label>
-              <textarea
-                rows={3}
-                value={bioContract}
-                onChange={(e) => setBioContract(e.target.value)}
-                placeholder="e.g., Permanent contract (indefinido), 3 years with current employer"
-                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <ShieldCheck className="w-3.5 h-3.5 text-blue-400" />
-                Financial guarantees you can offer
-              </label>
-              <textarea
-                rows={3}
-                value={bioGuarantees}
-                onChange={(e) => setBioGuarantees(e.target.value)}
-                placeholder="e.g., Guarantor available, or 2 months deposit plus 1 month upfront"
-                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <FolderCheck className="w-3.5 h-3.5 text-purple-400" />
-                Documents you can provide immediately
-              </label>
-              <textarea
-                rows={3}
-                value={bioDocuments}
-                onChange={(e) => setBioDocuments(e.target.value)}
-                placeholder="e.g., Last 3 payslips, employment contract, tax return, passport/NIE"
-                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <CalendarClock className="w-3.5 h-3.5 text-amber-400" />
-                How long you intend to stay
-              </label>
-              <textarea
-                rows={3}
-                value={bioLeaseLength}
-                onChange={(e) => setBioLeaseLength(e.target.value)}
-                placeholder="e.g., Looking for a minimum of 2–3 years, happy to sign long"
-                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5 text-emerald-400" />
-                When you can view the property
-              </label>
-              <textarea
-                rows={3}
-                value={bioViewing}
-                onChange={(e) => setBioViewing(e.target.value)}
-                placeholder="e.g., Weekday evenings after 18:00 and any time at weekends"
-                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[96px] sm:min-h-[110px] leading-relaxed resize-y"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider flex items-center gap-1.5">
-                <FileText className="w-3.5 h-3.5 text-emerald-400" />
-                Additional strengths or notes
-              </label>
-              <textarea
-                rows={4}
-                value={bioNotes}
-                onChange={(e) => setBioNotes(e.target.value)}
-                placeholder="e.g., Excellent credit score (800+), landlord references ready."
-                className="w-full bg-zinc-900/90 sm:bg-zinc-950 border border-zinc-800 focus:border-blue-500 rounded-2xl p-4 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[110px] sm:min-h-[130px] leading-relaxed resize-y"
-              />
-            </div>
+            <HouseholdPersonaFields value={persona} onChange={setPersona} />
           </div>
         )}
 
@@ -834,21 +699,32 @@ export default function OnboardingView() {
 
               <div className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl space-y-1.5 sm:col-span-2">
                 <span className="text-xs font-mono font-bold text-purple-400 uppercase tracking-wider block">4. Tenant Outreach Profile</span>
-                {bioProfession || bioTimeline || bioHousehold || bioPets || bioNotes ? (
-                  <>
-                    {bioProfession && <p className="text-sm font-semibold text-zinc-200 break-words">{bioProfession}</p>}
-                    {(bioTimeline || bioPets) && (
-                      <p className="text-xs text-zinc-400 break-words">
-                        {bioTimeline && <>Move-in: <span className="text-zinc-300">{bioTimeline}</span></>}
-                        {bioTimeline && bioPets && ' • '}
-                        {bioPets}
-                      </p>
+                {work.occupation && (
+                  <p className="text-sm font-semibold text-zinc-200 break-words">
+                    You: {work.occupation}
+                  </p>
+                )}
+                {persona.householdComposition || persona.moveInTimeline || persona.pets ? (
+                  <p className="text-xs text-zinc-400 break-words">
+                    {persona.householdComposition}
+                    {persona.householdComposition && persona.moveInTimeline && ' • '}
+                    {persona.moveInTimeline && (
+                      <>Move-in: <span className="text-zinc-300">{persona.moveInTimeline}</span></>
                     )}
-                  </>
-                ) : (
+                    {persona.pets && ` • ${persona.pets}`}
+                  </p>
+                ) : null}
+                {!work.employmentStatus && !persona.householdComposition && (
                   <p className="text-xs text-zinc-500 break-words">
                     Not filled in. Outreach drafts will rely on the listing and your criteria alone —
                     go back to step 5 to add your background.
+                  </p>
+                )}
+                {/* Each member writes their own work, so this is only ever half the picture. */}
+                {work.employmentStatus && (
+                  <p className="text-[11px] text-zinc-500 break-words pt-0.5">
+                    Your work is yours alone. Messages you enter are written in your voice; ones your
+                    partner enters are written in theirs, from their own answers.
                   </p>
                 )}
                 <p className="text-xs text-zinc-400 break-words pt-0.5">
@@ -964,10 +840,17 @@ export default function OnboardingView() {
               <ChevronLeft className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />
               <span>Back</span>
             </button>
+            {/*
+              The employment status is the one answer everybody can give, and the
+              app gates on it — letting someone past here without it would only
+              bounce them straight back on the next load.
+            */}
             <button
               type="button"
               onClick={() => setStep(6)}
-              className="flex-1 sm:flex-initial bg-blue-500 hover:bg-blue-600 text-white font-bold px-8 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 cursor-pointer text-base sm:text-sm active:scale-[0.98]"
+              disabled={!work.employmentStatus}
+              title={work.employmentStatus ? undefined : 'Pick your situation first'}
+              className="flex-1 sm:flex-initial bg-blue-500 hover:bg-blue-600 disabled:bg-zinc-800 disabled:text-zinc-500 disabled:shadow-none text-white font-bold px-8 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 cursor-pointer text-base sm:text-sm active:scale-[0.98]"
             >
               <span>Next</span>
               <ChevronRight className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />

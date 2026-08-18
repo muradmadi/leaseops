@@ -14,9 +14,12 @@ import {
   setApartmentActiveApiSchema,
   setApartmentStageApiSchema,
   setApartmentAsideApiSchema,
+  setApartmentAuthorApiSchema,
   setApartmentActive,
   setApartmentStage,
   setApartmentAside,
+  setApartmentOutreachAuthor,
+  findHouseholdMembers,
   archiveApartment,
   restoreApartment,
   listArchivedApartments,
@@ -36,7 +39,11 @@ import {
 } from '@leaseops/db';
 import { processListingAsync, buildListingFromInput, DEFAULT_TITLE } from '../services/scraper';
 import { rescoreApartment } from '../services/rescore';
-import { enrichQualifiedLead, resolveHouseholdPersona } from '../services/qualification';
+import {
+  enrichQualifiedLead,
+  resolveOutreachPersona,
+  resolveApartmentAuthorId,
+} from '../services/qualification';
 import { analyseListing, draftOutreachMessage, suggestChatReply } from '../services/llm';
 import { resolveLlmConfig } from '../services/anthropic';
 import { globalEvents } from '../services/events';
@@ -274,6 +281,50 @@ app.patch('/:id/stage', zValidator('json', setApartmentStageApiSchema), async (c
   return c.json(updated, 200);
 });
 
+/**
+ * PATCH /:id/author
+ * Sets whose voice this listing's messages are written in, or clears it back to
+ * whoever entered the listing.
+ *
+ * Exists because the account and the person are not the same thing: partners log
+ * in on each other's phones, and a listing one of them entered is often written
+ * to by the other. Without this the draft would say "I" about the wrong person,
+ * which is the defect per-member work exists to fix, arriving by another door.
+ *
+ * **The id is checked against the caller's own household.** It arrives in a
+ * request body, so it is untrusted in exactly the way a `householdId` would be —
+ * unchecked, it would let a caller write another household's member id into
+ * their listing and pull that person's work into their prompts.
+ *
+ * Existing drafts are left alone. They are a record of what was written, and
+ * silently rewriting a message the user may already have sent would be worse
+ * than a stale one; the next draft or reply uses the new author.
+ */
+app.patch('/:id/author', zValidator('json', setApartmentAuthorApiSchema), async (c) => {
+  const id = c.req.param('id');
+  const householdId = c.get('householdId');
+  const { authorId } = c.req.valid('json');
+
+  const apartment = await findApartmentForHousehold(id, householdId);
+  if (!apartment) {
+    return c.json({ message: 'Apartment listing not found', statusCode: 404 }, 404);
+  }
+
+  if (authorId !== null) {
+    const members = await findHouseholdMembers(householdId);
+    if (!members.some((member) => member.id === authorId)) {
+      return c.json(
+        { message: 'That person is not a member of this household', statusCode: 400 },
+        400
+      );
+    }
+  }
+
+  const updated = await setApartmentOutreachAuthor(id, authorId);
+  globalEvents.emit('apartmentUpdated', { id });
+  return c.json(updated, 200);
+});
+
 app.patch('/:id/active', zValidator('json', setApartmentActiveApiSchema), async (c) => {
   const id = c.req.param('id');
   const householdId = c.get('householdId');
@@ -375,6 +426,10 @@ app.post(
     const created = await createApartment({
       id,
       householdId,
+      // Whoever enters the listing is the one writing to this landlord, so the
+      // outreach draft is written in their voice. From the session, never the
+      // body — the same rule as `householdId`.
+      createdBy: c.get('user').id,
       // A listing entered by hand may have no link at all; the row still needs a
       // unique value for the per-household URL index.
       url: data.url?.trim() || `manual:${id}`,
@@ -615,7 +670,11 @@ app.post('/:id/messages/init', async (c) => {
 
   const userProfile = await findProfileByHouseholdId(c.get('householdId'));
   
-  const persona = await resolveHouseholdPersona(c.get('householdId'), userProfile);
+  const persona = await resolveOutreachPersona(
+    c.get('householdId'),
+    userProfile,
+    resolveApartmentAuthorId(apartment)
+  );
 
   const ext = (apartment.extractedData || {}) as any;
   const description = ext.description || '';
@@ -795,7 +854,11 @@ app.post('/:id/messages/suggest', async (c) => {
 
   const userProfile = await findProfileByHouseholdId(c.get('householdId'));
 
-  const persona = await resolveHouseholdPersona(c.get('householdId'), userProfile);
+  const persona = await resolveOutreachPersona(
+    c.get('householdId'),
+    userProfile,
+    resolveApartmentAuthorId(apartment)
+  );
 
   const ext = (apartment.extractedData || {}) as any;
 

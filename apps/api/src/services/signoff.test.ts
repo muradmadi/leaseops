@@ -5,6 +5,7 @@ import {
   memberName,
   resolveWritingForm,
   buildWritingForms,
+  buildPersonaPeople,
 } from './signoff';
 
 describe('Outreach sign-off derivation', () => {
@@ -120,5 +121,74 @@ describe('Grammatical form resolution', () => {
 
   it('skips a member with a form but no usable name', () => {
     expect(buildWritingForms([{ displayName: null, username: null, gender: 'male' }])).toBe('');
+  });
+});
+
+describe('buildPersonaPeople', () => {
+  const murad = {
+    id: 'u_murad',
+    displayName: 'Murad',
+    workProfile: {
+      employmentStatus: 'employed' as const,
+      occupation: 'MarTech Specialist at LeadTech, remote',
+      contractDetails: 'permanent, 30h',
+      rightToWork: 'student visa changing to a work visa',
+    },
+  };
+  const paulie = {
+    id: 'u_paulie',
+    displayName: 'Paulie',
+    workProfile: { employmentStatus: 'student' as const, occupation: 'Nursing degree, final year' },
+  };
+
+  it('marks the member who entered the listing as the writer', () => {
+    const people = buildPersonaPeople([murad, paulie], 'u_paulie');
+
+    expect(people.map((p) => p.name)).toEqual(['Murad', 'Paulie']);
+    expect(people.find((p) => p.name === 'Paulie')?.isAuthor).toBe(true);
+    expect(people.find((p) => p.name === 'Murad')?.isAuthor).toBe(false);
+  });
+
+  it('keeps each member\'s work on their own line', () => {
+    const people = buildPersonaPeople([murad, paulie], 'u_paulie');
+
+    // The bug this exists to prevent: Paulie's letter narrating Murad's job in
+    // the first person, because the facts had no owner.
+    const author = people.find((p) => p.isAuthor)!;
+    expect(author.occupation).toBe('Nursing degree, final year');
+    expect(author.contractDetails).toBeUndefined();
+    expect(author.rightToWork).toBeUndefined();
+    expect(people.find((p) => !p.isAuthor)?.rightToWork).toBe('student visa changing to a work visa');
+  });
+
+  it('states the employment status in prose rather than the stored token', () => {
+    const people = buildPersonaPeople([murad, paulie], 'u_paulie');
+    expect(people.map((p) => p.employmentStatus)).toEqual(['employed', 'a student']);
+  });
+
+  it('falls back to the oldest member when the author is unknown', () => {
+    // Listings entered before authorship was recorded, and listings whose author
+    // has since left. The oldest account is whose job the shared persona held, so
+    // those drafts keep reading as they always did.
+    expect(buildPersonaPeople([murad, paulie], null)[0].isAuthor).toBe(true);
+    expect(buildPersonaPeople([murad, paulie], 'u_departed')[0].isAuthor).toBe(true);
+  });
+
+  it('never leaves a household without an author', () => {
+    // A draft with nobody marked has no first person, and the model picks one.
+    for (const authorId of [null, undefined, '', 'nobody']) {
+      expect(buildPersonaPeople([murad, paulie], authorId).filter((p) => p.isAuthor)).toHaveLength(1);
+    }
+  });
+
+  it('reports a member with no work rather than dropping them from the household', () => {
+    const people = buildPersonaPeople([murad, { id: 'u_x', displayName: 'Alex' }], 'u_murad');
+    expect(people).toHaveLength(2);
+    expect(people[1]).toMatchObject({ name: 'Alex', isAuthor: false, occupation: undefined });
+  });
+
+  it('skips a member with no usable name, as the sign-off does', () => {
+    expect(buildPersonaPeople([{ id: 'u_x', displayName: null, username: null }], 'u_x')).toEqual([]);
+    expect(buildPersonaPeople([], null)).toEqual([]);
   });
 });

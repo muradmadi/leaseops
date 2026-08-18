@@ -46,3 +46,14 @@ export const upsertProfileApiSchema = z.object({
 });
 
 export type UpsertProfileApiPayload = z.infer<typeof upsertProfileApiSchema>;
+
+/**
+ * The household's shared tenant facts on their own, for the screen that edits
+ * them without holding the rest of the criteria. See `updateTenantPersona` for
+ * why this is not just a partial of the schema above.
+ */
+export const updateTenantPersonaApiSchema = z.object({
+  tenantPersona: z.string().max(20000),
+});
+
+export type UpdateTenantPersonaApiPayload = z.infer<typeof updateTenantPersonaApiSchema>;

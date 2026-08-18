@@ -1,0 +1,1 @@
+ALTER TABLE `apartments` ADD `outreach_author_id` text;

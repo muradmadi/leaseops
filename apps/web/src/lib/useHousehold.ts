@@ -1,6 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './api';
-import type { Gender, GrammaticalForm, AnthropicModelId } from '@leaseops/db';
+import type {
+  Gender,
+  GrammaticalForm,
+  AnthropicModelId,
+  WorkProfile,
+  EmploymentStatus,
+} from '@leaseops/db';
 
 export interface HouseholdMember {
   id: string;
@@ -9,6 +15,13 @@ export interface HouseholdMember {
   /** Null for accounts created before the question existed, or skipped. */
   gender: Gender | null;
   grammaticalForm: GrammaticalForm | null;
+  /**
+   * This member's work. **Null means never asked**, which is what sends them to
+   * the work screen; an object means they answered, even if every box is blank.
+   * Visible to the household because outreach names each member's work — there
+   * are no per-member permissions in LeaseOps by design.
+   */
+  workProfile: WorkProfile | null;
   createdAt: string | number;
 }
 
@@ -101,6 +114,30 @@ export function useUpdateMember() {
       // The sign-off is derived from these names, so its preview is now stale.
       queryClient.invalidateQueries({ queryKey: ['households', 'me'] });
       queryClient.invalidateQueries({ queryKey: ['auth', 'me'] });
+    },
+  });
+}
+
+export interface WorkProfileUpdate extends Omit<WorkProfile, 'employmentStatus'> {
+  /** Required: it is the answer everyone can give, and the one that closes the gate. */
+  employmentStatus: EmploymentStatus;
+}
+
+/**
+ * Records your own work. Writes your user row only, so both members can be on
+ * this screen at the same time without either overwriting the other.
+ */
+export function useUpdateWorkProfile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (work: WorkProfileUpdate) =>
+      apiFetch<HouseholdMember>('/households/me/work', {
+        method: 'PATCH',
+        body: JSON.stringify(work),
+      }),
+    onSuccess: () => {
+      // The member list carries the work profiles, and the gate reads them.
+      queryClient.invalidateQueries({ queryKey: ['households', 'me'] });
     },
   });
 }

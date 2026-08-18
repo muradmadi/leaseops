@@ -24,6 +24,41 @@ export const apartments = sqliteTable(
     householdId: text('household_id')
       .notNull()
       .references(() => households.id, { onDelete: 'cascade' }),
+    /**
+     * The member who entered this listing, and therefore the person whose voice
+     * the outreach is written in.
+     *
+     * Both partners share one pipeline, but only one of them is sitting on the
+     * portal with an account of their own, writing to this landlord. Whoever
+     * added the listing is that person, so the draft says "I" about them and
+     * names the others for their own work — see `resolveOutreachPersona`.
+     *
+     * A plain user id rather than a foreign key, matching
+     * `households.anthropicApiKeySetBy`: it avoids an import cycle between the
+     * two schema files, and a departed member must not take the household's
+     * listings with them. Null — every row that predates this column, or an
+     * author who has since left — falls back to the household's oldest member,
+     * which is how those drafts already read.
+     */
+    createdBy: text('created_by'),
+    /**
+     * Who this listing's outreach is written as, when that is not simply whoever
+     * entered it.
+     *
+     * A separate column from `createdBy` rather than an edit to it, for the same
+     * reason `isActive` is separate from `status`: they answer two questions and
+     * collapsing them loses the half you cannot recover. `createdBy` is a record
+     * of what happened; this is a choice you can change. One partner logging in
+     * on the other's phone, or picking up a listing the other entered, changes
+     * who is writing without rewriting who added it.
+     *
+     * **Null means "follow `createdBy`"**, which is why it is nullable rather
+     * than backfilled: an untouched listing keeps tracking its creator, and every
+     * row that predates the whole idea keeps falling through to the household's
+     * oldest member. Setting it is an override and nothing writes it
+     * automatically — see `resolveApartmentAuthorId`.
+     */
+    outreachAuthorId: text('outreach_author_id'),
     url: text('url').notNull(),
     title: text('title').notNull(),
     price: real('price').notNull(),

@@ -1,6 +1,6 @@
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../client';
-import { users, type User, type NewUser } from '../schema/auth';
+import { users, type User, type NewUser, type WorkProfile } from '../schema/auth';
 
 /**
  * Total accounts on the instance, across every household.
@@ -66,6 +66,25 @@ export async function updateUserMember(
   const [updated] = await db
     .update(users)
     .set({ ...data, updatedAt: new Date() })
+    .where(eq(users.id, userId))
+    .returning();
+  return updated;
+}
+
+/**
+ * Records a member's own work details.
+ *
+ * Writes only this user's row, so both members can fill the work screen in at
+ * the same time without either overwriting the other — unlike the household
+ * persona, which is one shared row.
+ */
+export async function updateUserWorkProfile(
+  userId: string,
+  workProfile: WorkProfile
+): Promise<User | undefined> {
+  const [updated] = await db
+    .update(users)
+    .set({ workProfile, updatedAt: new Date() })
     .where(eq(users.id, userId))
     .returning();
   return updated;

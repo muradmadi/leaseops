@@ -22,6 +22,19 @@ household see an identical dashboard from any device.
   and anything unrated falls back to a neutral 4. Do not reintroduce a path that
   infers ratings from the listing text — an explicit rating always won anyway, so
   it only ever produced inconsistency.
+- **Work is the one thing a household does not share.** The criteria, the
+  pipeline and the tenant facts are the household's, but a job, its contract, its
+  income and the right to work behind it belong to one member and live on
+  `users.workProfile`. The outreach draft is written in the voice of whoever
+  entered the listing (`apartments.createdBy`) and names the other members for
+  their own work. `workProfile === null` means the question has never been put to
+  that account, which is what forces them to the work screen; an object — even
+  one with every box blank — means they answered and they are never asked again.
+  The voice can be overridden per listing (`apartments.outreachAuthorId`), since
+  partners log in on each other's phones; `resolveApartmentAuthorId` is the one
+  place that order lives — override, then creator, then the oldest member.
+  Anything stored on the household persona is written into *both* members'
+  letters, so it must be phrased to stay true in either mouth.
 - Passwords are hashed with `Bun.password` (argon2id). Never return a `User` row
   straight from a route — use `toPublicUser`.
 - The household join code is a secret granting full access. It is rotatable and
@@ -233,6 +246,10 @@ to add one.
   and a 1/5 will not either, but the listing is still scored and still shown with
   its reason rather than hidden. Deliberate, and asserted in
   `apps/api/src/services/mcda.test.ts`.
+- **Changing who a listing is written as does not rewrite existing messages.**
+  Those are a record of what was written and may already have been sent, so the
+  new voice applies to the next draft or reply. Redoing an existing draft means
+  rejecting it (which deletes it) and drafting again.
 - **Manual ratings silently override listing evidence.** A user rating beats
   extracted data in scoring, while the AI review still reads the listing, so the
   two can disagree. Open design question, not a defect.

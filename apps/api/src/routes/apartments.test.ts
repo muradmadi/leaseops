@@ -56,6 +56,9 @@ describe('Apartments Route', () => {
     expect(data.url).toBe(testUrl);
     expect(data.status).toBe('UNPROCESSED');
     expect(typeof data.id).toBe('string');
+    // Whoever entered the listing is who the outreach is written as. Taken from
+    // the session, so it cannot be claimed by a request body.
+    expect(data.createdBy).toBe(account.userId);
     createdId = data.id;
   });
 
