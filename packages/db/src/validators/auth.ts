@@ -109,6 +109,21 @@ export const updateMeApiSchema = z.object({
 export type UpdateMeApiPayload = z.infer<typeof updateMeApiSchema>;
 
 /**
+ * How long one work answer may be.
+ *
+ * These are prose boxes, not form fields: people answer "contract type and
+ * hours" with the paragraph that actually explains their situation, and a fact
+ * may now carry a `[[note]]` telling the drafter how to use it, which makes a
+ * real answer longer still. The original 300 was under half of what a genuine
+ * answer already was — a stored 685-character `occupation` could no longer be
+ * saved back, so the work screen rejected the user's own data.
+ *
+ * Generous but bounded: these strings reach an LLM prompt, and the cap is what
+ * stops one field from crowding out every other fact in the draft.
+ */
+const WORK_FIELD_MAX = 2000;
+
+/**
  * API payload for your own work details — the only part of the tenant story
  * that is not shared with the household.
  *
@@ -119,10 +134,10 @@ export type UpdateMeApiPayload = z.infer<typeof updateMeApiSchema>;
  */
 export const updateWorkProfileApiSchema = z.object({
   employmentStatus: z.enum(EMPLOYMENT_STATUSES),
-  occupation: z.string().trim().max(300).default(''),
-  contractDetails: z.string().trim().max(500).default(''),
-  income: z.string().trim().max(300).default(''),
-  rightToWork: z.string().trim().max(500).default(''),
+  occupation: z.string().trim().max(WORK_FIELD_MAX).default(''),
+  contractDetails: z.string().trim().max(WORK_FIELD_MAX).default(''),
+  income: z.string().trim().max(WORK_FIELD_MAX).default(''),
+  rightToWork: z.string().trim().max(WORK_FIELD_MAX).default(''),
 });
 
 export type UpdateWorkProfileApiPayload = z.infer<typeof updateWorkProfileApiSchema>;

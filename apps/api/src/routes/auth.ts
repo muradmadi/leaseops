@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../services/validate';
 import { setCookie, deleteCookie } from 'hono/cookie';
 import { unlink } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';

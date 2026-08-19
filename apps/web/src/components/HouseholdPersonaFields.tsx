@@ -17,6 +17,7 @@ import {
   Clock,
   FileText,
 } from 'lucide-react';
+import AnnotationHint from './AnnotationHint';
 import type { HouseholdPersona } from '../lib/persona';
 
 const FIELDS: {
@@ -30,7 +31,7 @@ const FIELDS: {
   {
     key: 'householdComposition',
     label: 'Who will be living in the apartment?',
-    placeholder: 'e.g., a couple, both working, no children',
+    placeholder: 'e.g., a couple of four years, both working, no children [[always say who is moving in]]',
     icon: Users,
     accent: 'text-purple-400',
     rows: 3,
@@ -38,7 +39,8 @@ const FIELDS: {
   {
     key: 'pets',
     label: 'Pets or smoking habits',
-    placeholder: 'e.g., no pets, neither of us smokes',
+    placeholder:
+      'e.g., no pets, neither of us smokes, no parties [[mention if the listing restricts pets, smoking or noise]]',
     icon: HeartHandshake,
     accent: 'text-amber-400',
     rows: 3,
@@ -54,7 +56,8 @@ const FIELDS: {
   {
     key: 'intendedLeaseLength',
     label: 'How long you intend to stay',
-    placeholder: 'e.g., minimum 1 year, happy to sign for 2',
+    placeholder:
+      'e.g., minimum 1 year, happy to sign for 2 [[worth mentioning — owners care how long we stay]]',
     icon: CalendarClock,
     accent: 'text-amber-400',
     rows: 3,
@@ -63,7 +66,7 @@ const FIELDS: {
     key: 'financialGuarantees',
     label: 'Financial guarantees you can offer',
     placeholder:
-      "e.g., Murad's parents can act as guarantors with bank statements, and we can put up 2–3 months up front — name whose they are, the message is sent by both of you",
+      "e.g., Murad's parents can act as guarantors with bank statements, and we can put up 2–3 months up front [[don't volunteer the amount — if they ask about guarantees, offer to discuss terms]]",
     icon: ShieldCheck,
     accent: 'text-blue-400',
     rows: 3,
@@ -71,7 +74,8 @@ const FIELDS: {
   {
     key: 'documentsReady',
     label: 'Documents you can provide immediately',
-    placeholder: 'e.g., payslips and contracts for both of us, passports, NIE',
+    placeholder:
+      "e.g., payslips and contracts for both of us, passports, NIE [[don't list these unprompted — offer only if they ask]]",
     icon: FolderCheck,
     accent: 'text-purple-400',
     rows: 3,
@@ -80,7 +84,7 @@ const FIELDS: {
     key: 'viewingAvailability',
     label: 'When you can view the property',
     placeholder:
-      'e.g., we are in Madrid until October — video call any evening, or a friend can view for us',
+      'e.g., we are in Madrid until October — video call any evening, or a friend can view for us [[only raise this at the end, with the viewing]]',
     icon: Clock,
     accent: 'text-emerald-400',
     rows: 3,
@@ -88,7 +92,8 @@ const FIELDS: {
   {
     key: 'additionalNotes',
     label: 'Additional strengths or notes',
-    placeholder: 'e.g., landlord reference from our current flat, both work from home',
+    placeholder:
+      'e.g., landlord reference from our current flat, both work from home [[low priority, only if there is room]]',
     icon: FileText,
     accent: 'text-emerald-400',
     rows: 4,
@@ -103,6 +108,8 @@ interface Props {
 export default function HouseholdPersonaFields({ value, onChange }: Props) {
   return (
     <div className="space-y-6 sm:space-y-8">
+      <AnnotationHint />
+
       {FIELDS.map((field) => {
         const Icon = field.icon;
         return (

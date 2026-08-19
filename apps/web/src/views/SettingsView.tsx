@@ -6,9 +6,11 @@ import Segmented, {
   type GrammaticalForm,
 } from '../components/Segmented';
 import { Link } from 'wouter';
+import { stripAnnotations } from '../lib/persona';
 import {
   ArrowLeft,
   User,
+  UserRound,
   LogOut,
   Sparkles,
   Settings,
@@ -333,7 +335,9 @@ export default function SettingsView() {
                 const me = household?.members.find((m) => m.id === authState?.user?.id);
                 const occupation = me?.workProfile?.occupation?.trim();
                 return occupation ? (
-                  <p className="font-bold text-zinc-200 text-sm break-words">{occupation}</p>
+                  <p className="font-bold text-zinc-200 text-sm break-words">
+                    {stripAnnotations(occupation)}
+                  </p>
                 ) : (
                   <p className="text-sm text-zinc-500">
                     {me?.workProfile?.employmentStatus
@@ -347,10 +351,10 @@ export default function SettingsView() {
                 partner's are written in theirs.
               </p>
               <Link
-                href="/about-you"
+                href="/profile"
                 className="text-xs text-blue-400 hover:text-blue-300 font-bold cursor-pointer min-h-[44px] flex items-center"
               >
-                Edit your work and the shared details
+                Edit your profile
               </Link>
             </div>
 
@@ -863,6 +867,53 @@ export default function SettingsView() {
                 </div>
               </button>
             </Link>
+
+            {/* The wizard covers criteria and both profiles in one pass. These
+                two go straight to the half you meant, in the order it asks for
+                them — and they are separate rows because the underlying saves
+                are separate: yours writes your user row, the household's writes
+                the one shared profile that a partner may be editing too. */}
+            <div className="border-t border-zinc-800/80">
+              <Link href="/profile">
+                <button className="w-full p-4 sm:p-5 flex items-center justify-between hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center border border-blue-500/20 shrink-0">
+                      <UserRound className="w-5 h-5 text-blue-400" />
+                    </div>
+                    <div>
+                      <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
+                        Edit your profile
+                      </p>
+                      <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
+                        Your job, contract, income and right to work. Yours alone — your partner
+                        answers it for themselves.
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              </Link>
+            </div>
+
+            <div className="border-t border-zinc-800/80">
+              <Link href="/household">
+                <button className="w-full p-4 sm:p-5 flex items-center justify-between hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800">
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 shrink-0">
+                      <Home className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <div>
+                      <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
+                        Edit household profile
+                      </p>
+                      <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
+                        Who is moving in, guarantees, documents, dates and pets. Shared, and written
+                        into both of your messages.
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              </Link>
+            </div>
 
             {/* Sits under the wizard because changing your criteria is exactly
                 when the stored scores stop matching them. */}

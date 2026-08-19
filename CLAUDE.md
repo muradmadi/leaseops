@@ -234,6 +234,12 @@ to add one.
 - **`docker-compose.yml` is the development stack** and runs the dev server with
   source bind-mounted. Production is `Dockerfile` + `docker-compose.prod.yml`;
   the two are unrelated and only the latter is hardened.
+- **Disclosure is controlled per fact, by the user, in `[[double brackets]]`.**
+  A note after any persona or work answer tells the drafter how to use that fact
+  — hold it, lead with it, only if asked. Nothing else worked: prompt wording and
+  field-withholding were both built and measured, and neither moved disclosure.
+  See `apps/api/CLAUDE.md` for the numbers. Do not replace it with a rule or a
+  toggle.
 - **The outreach sign-off is derived, never typed.** It is rebuilt on every draft
   from the household members' display names, joined by a conjunction in the target
   language (`apps/api/src/services/signoff.ts`) — "Murad und Paulie" in German,

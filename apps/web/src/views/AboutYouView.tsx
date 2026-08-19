@@ -14,7 +14,8 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'wouter';
-import { Check, ArrowRight, Loader2, RefreshCw, Users } from 'lucide-react';
+import { Check, ArrowRight, Loader2, RefreshCw, Users, ChevronLeft } from 'lucide-react';
+import { Link } from 'wouter';
 import { useAuth } from '../lib/useAuth';
 import { useHousehold, useUpdateWorkProfile } from '../lib/useHousehold';
 import { useProfile, useUpdateHouseholdPersona } from '../lib/useProfile';
@@ -35,9 +36,18 @@ import {
 interface Props {
   /** True when this account has never answered, which is what makes it mandatory. */
   required: boolean;
+  /**
+   * Which half to show. The gate always asks for both, because a new member has
+   * answered neither. Settings links to one at a time: they are different
+   * things — one is yours and one is everyone's — and the two saves were already
+   * separate, so splitting the screen changes nothing about how they are written.
+   */
+  section?: 'both' | 'work' | 'household';
 }
 
-export default function AboutYouView({ required }: Props) {
+export default function AboutYouView({ required, section = 'both' }: Props) {
+  const showWork = section !== 'household';
+  const showHousehold = section !== 'work';
   const [, setLocation] = useLocation();
   const { data: auth } = useAuth();
   const { data: household } = useHousehold();
@@ -115,20 +125,44 @@ export default function AboutYouView({ required }: Props) {
   };
 
   const handleDone = async () => {
-    if (statusChosen && (workDirty || workUnanswered)) await handleSaveWork();
-    if (personaTouched) await handleSavePersona();
-    setLocation('/');
+    if (showWork && statusChosen && (workDirty || workUnanswered)) await handleSaveWork();
+    if (showHousehold && personaTouched) await handleSavePersona();
+    setLocation(section === 'both' ? '/' : '/settings');
   };
 
   const waitingOn = others.filter((member) => !member.workProfile?.employmentStatus);
 
   return (
     <div className="min-h-[100dvh] bg-zinc-950 text-zinc-100 font-sans selection:bg-emerald-500/20 selection:text-emerald-400">
-      <header className="px-6 py-5 border-b border-zinc-900 bg-zinc-950/90 backdrop-blur-md sticky top-0 z-40">
-        <span className="text-[11px] font-bold uppercase tracking-widest text-blue-400 block font-mono">
-          {required ? 'One thing before you carry on' : 'Your details'}
-        </span>
-        <h1 className="text-xl font-extrabold text-zinc-100">About you and your household</h1>
+      <header className="px-6 py-5 border-b border-zinc-900 bg-zinc-950/90 backdrop-blur-md sticky top-0 z-40 flex items-center gap-3">
+        {!required && (
+          <Link href="/settings">
+            <button
+              title="Back to settings"
+              className="w-10 h-10 min-w-[44px] min-h-[44px] -ml-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-100 border border-zinc-800 flex items-center justify-center transition-all active:scale-95 cursor-pointer shrink-0"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+          </Link>
+        )}
+        <div className="min-w-0">
+          <span className="text-[11px] font-bold uppercase tracking-widest text-blue-400 block font-mono">
+            {required
+              ? 'One thing before you carry on'
+              : showWork && showHousehold
+                ? 'Your details'
+                : showWork
+                  ? 'Yours alone'
+                  : 'Shared with the household'}
+          </span>
+          <h1 className="text-xl font-extrabold text-zinc-100 truncate">
+            {showWork && showHousehold
+              ? 'About you and your household'
+              : showWork
+                ? 'Your profile'
+                : 'Household profile'}
+          </h1>
+        </div>
       </header>
 
       <main className="max-w-2xl mx-auto px-6 py-8 space-y-10">
@@ -140,6 +174,7 @@ export default function AboutYouView({ required }: Props) {
           </p>
         )}
 
+        {showWork && (
         <section className="space-y-5">
           <WorkProfileFields
             value={work}
@@ -166,8 +201,10 @@ export default function AboutYouView({ required }: Props) {
             <p className="text-xs text-red-400">{(saveWork.error as Error).message}</p>
           )}
         </section>
+        )}
 
-        <div className="border-t border-zinc-800 pt-8 space-y-2">
+        {showHousehold && (
+        <div className={showWork ? 'border-t border-zinc-800 pt-8 space-y-2' : 'space-y-2'}>
           <h2 className="text-sm font-extrabold text-zinc-100 uppercase tracking-wider flex items-center gap-2">
             <Users className="w-4 h-4 text-emerald-400" />
             Shared with the household
@@ -178,8 +215,9 @@ export default function AboutYouView({ required }: Props) {
             {others.length > 0 && ` ${others.map((m) => m.displayName || m.username).join(' and ')} sees the same boxes.`}
           </p>
         </div>
+        )}
 
-        {incoming && (
+        {showHousehold && incoming && (
           <div className="bg-amber-500/10 border border-amber-500/40 rounded-2xl p-4 space-y-3">
             <p className="text-xs text-amber-200 leading-relaxed">
               Someone else in the household saved these shared details while you were typing. Your
@@ -201,15 +239,17 @@ export default function AboutYouView({ required }: Props) {
           </div>
         )}
 
-        <HouseholdPersonaFields
-          value={persona}
-          onChange={(next) => {
-            setPersonaTouched(true);
-            setPersona(next);
-          }}
-        />
+        {showHousehold && (
+          <HouseholdPersonaFields
+            value={persona}
+            onChange={(next) => {
+              setPersonaTouched(true);
+              setPersona(next);
+            }}
+          />
+        )}
 
-        {waitingOn.length > 0 && (
+        {showWork && waitingOn.length > 0 && (
           <p className="text-[11px] text-zinc-500">
             {waitingOn.map((m) => m.displayName || m.username).join(' and ')} has not added their
             work yet. Messages will name yours and leave theirs out until they do — nothing is
@@ -221,7 +261,7 @@ export default function AboutYouView({ required }: Props) {
           <button
             type="button"
             onClick={handleDone}
-            disabled={!statusChosen || saveWork.isPending || savePersona.isPending}
+            disabled={(showWork && !statusChosen) || saveWork.isPending || savePersona.isPending}
             className="w-full bg-emerald-500 hover:bg-emerald-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-white font-bold px-6 py-3.5 rounded-xl text-sm transition-all min-h-[44px] flex items-center justify-center gap-2 active:scale-[0.98]"
           >
             {saveWork.isPending || savePersona.isPending ? (
@@ -231,7 +271,20 @@ export default function AboutYouView({ required }: Props) {
             )}
             {required ? 'Save and continue' : 'Save and close'}
           </button>
-          {!statusChosen && (
+          {/* Both halves save from this button, and a rejected persona used to
+              fail in silence: the spinner stopped, the screen stayed, and
+              nothing said why. Work errors render beside their own block. */}
+          {savePersona.isError && (
+            <p className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2.5 leading-relaxed">
+              The shared details could not be saved: {(savePersona.error as Error).message}
+            </p>
+          )}
+          {saveWork.isError && (
+            <p className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2.5 leading-relaxed">
+              Your work details could not be saved: {(saveWork.error as Error).message}
+            </p>
+          )}
+          {showWork && !statusChosen && (
             <p className="text-[11px] text-zinc-500 text-center">
               Pick your situation above to continue. There is an option for every case, including
               not working.

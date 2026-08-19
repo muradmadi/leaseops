@@ -12,7 +12,10 @@ import {
   AlertCircle,
   Users,
   X,
-  CheckCircle2
+  CheckCircle2,
+  UserRound,
+  Home,
+  MessageSquareQuote,
 } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
 import { useProfile, useUpdateProfile } from '../lib/useProfile';
@@ -25,9 +28,11 @@ import WorkProfileFields, {
   type WorkDraft,
 } from '../components/WorkProfileFields';
 import HouseholdPersonaFields from '../components/HouseholdPersonaFields';
+import AnnotationHint from '../components/AnnotationHint';
 import {
   parseHouseholdPersona,
   serialiseHouseholdPersona,
+  stripAnnotations,
   EMPTY_HOUSEHOLD_PERSONA,
   type HouseholdPersona,
 } from '../lib/persona';
@@ -40,8 +45,17 @@ export default function OnboardingView() {
   const saveWorkMutation = useUpdateWorkProfile();
   const [workLoaded, setWorkLoaded] = useState(false);
 
-  // Wizard Step State (1: Location & Logistics, 2: Financials, 3: Matrix Explained, 4: Preference Matrix, 5: Tenant Persona, 6: Summary)
-  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6>(1);
+  /**
+   * 1 Location · 2 Budget · 3 Matrix explained · 4 Preference matrix ·
+   * 5 What the outreach pages are for · 6 Your own profile ·
+   * 7 The household's profile · 8 Summary.
+   *
+   * Work and the household used to share screen 5, divided by a rule. They are
+   * two different things — one is yours and one is everyone's — and asking for
+   * both at once is what produced answers that put a partner's job and the
+   * household's guarantors in the same box.
+   */
+  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5 | 6 | 7 | 8>(1);
   const [activeCategoryIndex, setActiveCategoryIndex] = useState<number>(0);
 
   // Form State - General & Logistics
@@ -196,7 +210,7 @@ export default function OnboardingView() {
       <div className="fixed top-0 left-0 right-0 h-1 bg-zinc-900 z-50">
         <div 
           className="h-full bg-gradient-to-r from-emerald-500 via-teal-500 to-blue-500 transition-all duration-500"
-          style={{ width: `${(step / 6) * 100}%` }}
+          style={{ width: `${(step / 8) * 100}%` }}
         />
       </div>
 
@@ -208,15 +222,17 @@ export default function OnboardingView() {
           </div>
           <div>
             <span className="text-[11px] font-bold uppercase tracking-widest text-emerald-400 block font-mono">
-              Step {step} of 6
+              Step {step} of 8
             </span>
             <h1 className="text-base sm:text-lg font-extrabold text-zinc-100 tracking-tight leading-snug mt-0.5 break-words">
               {step === 1 && 'Location & Communication'}
               {step === 2 && 'Budget & Space'}
               {step === 3 && 'Matrix Explained'}
               {step === 4 && 'Preference Matrix'}
-              {step === 5 && 'Tenant Outreach Bio'}
-              {step === 6 && 'Pipeline Review'}
+              {step === 5 && 'Writing to Landlords'}
+              {step === 6 && 'Your Profile'}
+              {step === 7 && 'Household Profile'}
+              {step === 8 && 'Pipeline Review'}
             </h1>
           </div>
         </div>
@@ -626,17 +642,84 @@ export default function OnboardingView() {
         )}
 
         {/* SCREEN 5: Who you are — your work, then the household's shared facts */}
+        {/* SCREEN 5: What the next two screens are for, before either is asked. */}
         {step === 5 && (
+          <div className="space-y-5 sm:space-y-6 animate-in fade-in duration-300">
+            <div className="space-y-2.5">
+              <h2 className="text-xl sm:text-2xl font-extrabold text-zinc-100 tracking-tight leading-snug">
+                Now, what a landlord needs to know about you
+              </h2>
+              <p className="text-sm text-zinc-400 leading-relaxed">
+                Everything so far described the flat you want. The next two screens describe the
+                tenant, which is what every outreach message and reply is written from. Nothing here
+                is invented — a draft can only ever say what you type on these two screens.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl space-y-2">
+                <span className="text-xs font-mono font-bold text-blue-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <UserRound className="w-3.5 h-3.5" />
+                  Next: your profile
+                </span>
+                <p className="text-sm text-zinc-300 leading-relaxed">
+                  Your job, contract, income and right to work.
+                </p>
+                <p className="text-xs text-zinc-500 leading-relaxed">
+                  Yours alone. A message says “I” about whoever entered the listing, so your
+                  partner answers this screen from their own account and their job never ends up in
+                  your mouth.
+                </p>
+              </div>
+
+              <div className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl space-y-2">
+                <span className="text-xs font-mono font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Home className="w-3.5 h-3.5" />
+                  After that: the household
+                </span>
+                <p className="text-sm text-zinc-300 leading-relaxed">
+                  Who is moving in, guarantees, documents, dates and pets.
+                </p>
+                <p className="text-xs text-zinc-500 leading-relaxed">
+                  Shared, and written into both of your letters. Phrase it so it stays true whoever
+                  is sending — “Murad's parents can act as guarantors”, not “my parents”.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl space-y-2">
+              <span className="text-xs font-mono font-bold text-purple-400 uppercase tracking-wider flex items-center gap-1.5">
+                <MessageSquareQuote className="w-3.5 h-3.5" />
+                One fact per box
+              </span>
+              <p className="text-xs text-zinc-400 leading-relaxed">
+                Answer each question with the fact it asks for and nothing else. A guarantor
+                mentioned inside the box about your job cannot be held back later, because it is no
+                longer the answer to the question it is filed under.
+              </p>
+            </div>
+
+            <AnnotationHint variant="full" />
+          </div>
+        )}
+
+        {/* SCREEN 6: Your own work. Never shared — see WorkProfileFields. */}
+        {step === 6 && (
           <div className="space-y-8 animate-in fade-in duration-300">
             <WorkProfileFields value={work} onChange={setWork} />
+          </div>
+        )}
 
-            <div className="border-t border-zinc-800 pt-8 space-y-2">
+        {/* SCREEN 7: The household's shared facts, written into both letters. */}
+        {step === 7 && (
+          <div className="space-y-6 animate-in fade-in duration-300">
+            <div className="space-y-2">
               <h2 className="text-sm font-extrabold text-zinc-100 uppercase tracking-wider flex items-center gap-2">
                 <Users className="w-4 h-4 text-emerald-400" />
                 Shared with the household
               </h2>
               <p className="text-[11px] text-zinc-500 leading-relaxed">
-                Everything below goes into both of your messages. Write it so it stays true whoever
+                Everything here goes into both of your messages. Write it so it stays true whoever
                 is sending — “Murad's parents can act as guarantors”, not “my parents”.
               </p>
             </div>
@@ -645,8 +728,8 @@ export default function OnboardingView() {
           </div>
         )}
 
-        {/* SCREEN 6: Completion Summary & Pipeline Review */}
-        {step === 6 && (
+        {/* SCREEN 8: Completion Summary & Pipeline Review */}
+        {step === 8 && (
           <div className="space-y-4 sm:space-y-5 animate-in fade-in duration-300">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 sm:gap-4">
               <div className="bg-zinc-900/60 sm:bg-zinc-950/80 border border-zinc-800/80 p-4 sm:p-5 rounded-2xl space-y-1.5">
@@ -701,23 +784,26 @@ export default function OnboardingView() {
                 <span className="text-xs font-mono font-bold text-purple-400 uppercase tracking-wider block">4. Tenant Outreach Profile</span>
                 {work.occupation && (
                   <p className="text-sm font-semibold text-zinc-200 break-words">
-                    You: {work.occupation}
+                    You: {stripAnnotations(work.occupation)}
                   </p>
                 )}
                 {persona.householdComposition || persona.moveInTimeline || persona.pets ? (
                   <p className="text-xs text-zinc-400 break-words">
-                    {persona.householdComposition}
+                    {stripAnnotations(persona.householdComposition)}
                     {persona.householdComposition && persona.moveInTimeline && ' • '}
                     {persona.moveInTimeline && (
-                      <>Move-in: <span className="text-zinc-300">{persona.moveInTimeline}</span></>
+                      <>
+                        Move-in:{' '}
+                        <span className="text-zinc-300">{stripAnnotations(persona.moveInTimeline)}</span>
+                      </>
                     )}
-                    {persona.pets && ` • ${persona.pets}`}
+                    {persona.pets && ` • ${stripAnnotations(persona.pets)}`}
                   </p>
                 ) : null}
                 {!work.employmentStatus && !persona.householdComposition && (
                   <p className="text-xs text-zinc-500 break-words">
                     Not filled in. Outreach drafts will rely on the listing and your criteria alone —
-                    go back to step 5 to add your background.
+                    go back to step 6 to add your background.
                   </p>
                 )}
                 {/* Each member writes their own work, so this is only ever half the picture. */}
@@ -742,6 +828,15 @@ export default function OnboardingView() {
           </div>
         )}
       </main>
+
+      {step === 8 && (saveWorkMutation.isError || updateProfileMutation.isError) && (
+        <div className="px-6 pb-2 max-w-3xl mx-auto w-full shrink-0">
+          <p className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2.5 leading-relaxed">
+            Nothing was saved:{' '}
+            {((saveWorkMutation.error || updateProfileMutation.error) as Error).message}
+          </p>
+        </div>
+      )}
 
       {/* Bottom Navigation Bar */}
       <footer className="px-6 py-4 sm:py-5 border-t border-zinc-900 bg-zinc-950/90 backdrop-blur-md sticky bottom-0 z-40 flex items-center justify-between gap-4 shrink-0">
@@ -840,23 +935,16 @@ export default function OnboardingView() {
               <ChevronLeft className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />
               <span>Back</span>
             </button>
-            {/*
-              The employment status is the one answer everybody can give, and the
-              app gates on it — letting someone past here without it would only
-              bounce them straight back on the next load.
-            */}
             <button
               type="button"
               onClick={() => setStep(6)}
-              disabled={!work.employmentStatus}
-              title={work.employmentStatus ? undefined : 'Pick your situation first'}
-              className="flex-1 sm:flex-initial bg-blue-500 hover:bg-blue-600 disabled:bg-zinc-800 disabled:text-zinc-500 disabled:shadow-none text-white font-bold px-8 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 cursor-pointer text-base sm:text-sm active:scale-[0.98]"
+              className="flex-1 sm:flex-initial bg-blue-500 hover:bg-blue-600 text-white font-bold px-8 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 cursor-pointer text-base sm:text-sm active:scale-[0.98]"
             >
               <span>Next</span>
               <ChevronRight className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />
             </button>
           </>
-        ) : (
+        ) : step === 6 ? (
           <>
             <button
               type="button"
@@ -866,14 +954,63 @@ export default function OnboardingView() {
               <ChevronLeft className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />
               <span>Back</span>
             </button>
+            {/*
+              The employment status is the one answer everybody can give, and the
+              app gates on it — letting someone past here without it would only
+              bounce them straight back on the next load.
+            */}
+            <button
+              type="button"
+              onClick={() => setStep(7)}
+              disabled={!work.employmentStatus}
+              title={work.employmentStatus ? undefined : 'Pick your situation first'}
+              className="flex-1 sm:flex-initial bg-blue-500 hover:bg-blue-600 disabled:bg-zinc-800 disabled:text-zinc-500 disabled:shadow-none text-white font-bold px-8 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 cursor-pointer text-base sm:text-sm active:scale-[0.98]"
+            >
+              <span>Next</span>
+              <ChevronRight className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />
+            </button>
+          </>
+        ) : step === 7 ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setStep(6)}
+              className="flex-1 sm:flex-initial bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-semibold px-6 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] transition-all flex items-center justify-center gap-2 cursor-pointer text-base sm:text-sm active:scale-[0.98] border border-zinc-800"
+            >
+              <ChevronLeft className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />
+              <span>Back</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setStep(8)}
+              className="flex-1 sm:flex-initial bg-blue-500 hover:bg-blue-600 text-white font-bold px-8 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/25 cursor-pointer text-base sm:text-sm active:scale-[0.98]"
+            >
+              <span>Next</span>
+              <ChevronRight className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => setStep(7)}
+              className="flex-1 sm:flex-initial bg-zinc-900 hover:bg-zinc-800 text-zinc-300 font-semibold px-6 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] transition-all flex items-center justify-center gap-2 cursor-pointer text-base sm:text-sm active:scale-[0.98] border border-zinc-800"
+            >
+              <ChevronLeft className="w-5 h-5 sm:w-4 sm:h-4 stroke-[2.5]" />
+              <span>Back</span>
+            </button>
             <button
               type="button"
               onClick={handleSaveAndEnterPipeline}
-              disabled={updateProfileMutation.isPending}
+              disabled={saveWorkMutation.isPending || updateProfileMutation.isPending}
               className="flex-1 sm:flex-initial bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-zinc-950 font-extrabold px-8 py-4 sm:py-3.5 rounded-2xl min-h-[52px] sm:min-h-[48px] shadow-xl shadow-emerald-500/25 transition-all flex items-center justify-center gap-2 cursor-pointer text-base sm:text-sm active:scale-[0.98] disabled:opacity-50"
             >
               <Check className="w-5 h-5 stroke-[2.5]" />
-              <span>{updateProfileMutation.isPending ? 'Saving...' : 'Save & Enter Pipeline'}</span>
+              <span>
+                {saveWorkMutation.isPending || updateProfileMutation.isPending
+                  ? 'Saving...'
+                  : 'Save & Enter Pipeline'}
+              </span>
             </button>
           </>
         )}

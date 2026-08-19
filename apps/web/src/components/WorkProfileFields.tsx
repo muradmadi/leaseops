@@ -10,6 +10,7 @@
  */
 import type { EmploymentStatus, WorkProfile } from '@leaseops/db';
 import Segmented from './Segmented';
+import AnnotationHint from './AnnotationHint';
 import { Briefcase, FileSignature, Wallet, Stamp } from 'lucide-react';
 
 export type { EmploymentStatus, WorkProfile };
@@ -54,13 +55,18 @@ const QUESTIONS: Record<EmploymentStatus, Partial<Record<TextField, FieldCopy>>>
   employed: {
     occupation: {
       label: 'Job title and employer',
-      placeholder: 'e.g., MarTech Specialist at LeadTech, fully remote',
+      placeholder:
+        'e.g., MarTech Specialist at LeadTech, fully remote [[good position, worth leading with]]',
     },
     contractDetails: {
       label: 'Contract type and hours',
-      placeholder: 'e.g., permanent contract, 30h/week, 3 years with them',
+      placeholder:
+        'e.g., permanent contract, 30h/week on a student visa [[always mention the visa alongside the contract]]',
     },
-    income: { label: 'Income', placeholder: 'e.g., 2.400 € net per month' },
+    income: {
+      label: 'Income',
+      placeholder: "e.g., 2.400 € net per month [[don't volunteer — only if they ask about income]]",
+    },
     rightToWork: {
       label: 'Visa or residency status',
       placeholder: 'e.g., student visa being changed to a work visa — leave blank if not relevant',
@@ -75,7 +81,11 @@ const QUESTIONS: Record<EmploymentStatus, Partial<Record<TextField, FieldCopy>>>
       label: 'How your work is set up',
       placeholder: 'e.g., registered autónomo since 2022, quarterly tax returns',
     },
-    income: { label: 'Income', placeholder: 'e.g., averages 2.800 € net per month over the last year' },
+    income: {
+      label: 'Income',
+      placeholder:
+        "e.g., averages 2.800 € net per month over the last year [[don't volunteer — only if they ask]]",
+    },
     rightToWork: {
       label: 'Visa or residency status',
       placeholder: 'Leave blank if not relevant',
@@ -185,11 +195,13 @@ export default function WorkProfileFields({ value, onChange, name }: Props) {
           accent="blue"
         />
         <p className="text-[11px] text-zinc-500 leading-relaxed">
-          This is yours alone. Everything below the divider is shared with the household — the
-          landlord message says “I” about whoever entered the listing, and names the other members
-          for their own work.
+          This page is yours alone — your partner answers it for themselves. A message says “I”
+          about whoever entered the listing and names the other members for their own work, so a
+          job never ends up in the wrong mouth.
         </p>
       </div>
+
+      {fields.length > 0 && <AnnotationHint />}
 
       {fields.map((field) => {
         const copy = QUESTIONS[value.employmentStatus as EmploymentStatus][field]!;

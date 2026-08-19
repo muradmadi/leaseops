@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'bun:test';
-import { buildSecureSystemPrompt, draftOutreachMessage, generateCompromiseSummary } from './llm';
+import {
+  buildSecureSystemPrompt,
+  draftOutreachMessage,
+  generateCompromiseSummary,
+  stripAnnotations,
+} from './llm';
 
 describe('LLM Service & Security', () => {
   it('wraps untrusted content in <UNTRUSTED_LISTING_CONTENT> tags with explicit instructions', () => {
@@ -382,5 +387,50 @@ describe('Chat reply when offline', () => {
     );
 
     expect(res).toBeNull();
+  });
+});
+
+describe('Tenant notes in [[ ]]', () => {
+  it('removes a note and the space in front of it', () => {
+    expect(stripAnnotations('31,500 EUR gross [[do not volunteer this]]')).toBe('31,500 EUR gross');
+  });
+
+  it('removes a note that spans lines', () => {
+    expect(stripAnnotations('Indefinite contract [[always keep\nthe 30h limit with it]] since August')).toBe(
+      'Indefinite contract since August'
+    );
+  });
+
+  it('removes several notes in one field', () => {
+    expect(stripAnnotations('A [[one]] B [[two]] C')).toBe('A B C');
+  });
+
+  it('removes a stray unpaired marker, which is the visible half of the same accident', () => {
+    expect(stripAnnotations('Guarantors available [[ but only if asked')).toBe('Guarantors available  but only if asked');
+  });
+
+  it('leaves ordinary text alone, including single brackets', () => {
+    expect(stripAnnotations('Salary is 2.400 € [net] per month')).toBe('Salary is 2.400 € [net] per month');
+  });
+
+  it('keeps a note out of the offline draft, which no model ever sees', async () => {
+    const res = await draftOutreachMessage(null, 'Sunny Apartment', 'Beautiful 2-bedroom.', {
+      people: [
+        {
+          name: 'Sam',
+          isAuthor: true,
+          occupation: 'Software engineer [[good job, worth mentioning]]',
+          contractDetails: 'Permanent contract [[always say it is permanent]]',
+        },
+      ],
+      financialGuarantees: 'Two months up front [[do not volunteer the amount]]',
+      viewingAvailability: 'Weekday evenings [[only at the end]]',
+      targetLanguage: 'English',
+    });
+
+    expect(res.body).not.toContain('[[');
+    expect(res.body).not.toContain(']]');
+    expect(res.body).not.toContain('do not volunteer');
+    expect(res.body).toContain('Software engineer');
   });
 });

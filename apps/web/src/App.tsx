@@ -75,6 +75,13 @@ function AuthenticatedApp() {
         <Route path="/about-you">
           <AboutYouView required={false} />
         </Route>
+        {/* The gate asks for both halves; these edit one at a time from Settings. */}
+        <Route path="/profile">
+          <AboutYouView required={false} section="work" />
+        </Route>
+        <Route path="/household">
+          <AboutYouView required={false} section="household" />
+        </Route>
         <Route path="/apartments/:id/chat" component={ChatView} />
         <Route path="/apartments/:id" component={ApartmentDetailView} />
         <Route path="/settings" component={SettingsView} />

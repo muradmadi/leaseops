@@ -313,6 +313,24 @@ analysis `flags`) and the facts the tenant actually supplied.
   the writer. Documents, guarantees, pets, dates and availability stay shared on
   `userProfiles.tenantPersona`, which is why household answers must be phrased to
   stay true in either member's mouth ("Murad's parents can act as guarantors").
+- **A fact can carry its own disclosure rule, in `[[double brackets]]`.** Any
+  persona or work field may be followed by a note from the tenant — "don't
+  volunteer this", "only if they ask about income", "always mention the visa
+  alongside the contract". `ANNOTATION_RULES` is appended to *both* the outreach
+  and reply prompts, and `stripAnnotations` removes anything that survives into
+  generated text, including the offline stub, which interpolates persona fields
+  directly and would otherwise ship a note verbatim.
+
+  This exists because **nothing else controlled disclosure.** Rewriting the rules
+  did not: three prompts between 180 and 1,567 words produced the same breadth of
+  disclosure, and the short ones fabricated more. Withholding the field did not
+  either: the fact was usually duplicated in another field's prose, and a removed
+  field cannot come back when a listing *does* ask. Measured over 60 drafts on
+  four real listings, notes took naming the deposit amount unprompted from 17/20
+  to 0/20 and the document list from 19/20 to 3/20, while coverage of what the
+  listing asked went up. Disclosure is a per-fact, conditional decision, and a
+  global rule cannot express one — do not replace this with prompt wording or an
+  on/off setting, both of which were tried and measured.
 - **The author is whoever entered the listing** (`apartments.createdBy`), because
   that is the person with an account on the portal writing to this landlord.
   `resolveOutreachPersona(householdId, profile, authorId)` marks them, and the
@@ -521,6 +539,18 @@ whether to offer it. Uploads stage next to the live database rather than in
 `/tmp`, which is a small tmpfs in the production container.
 
 ## Gotchas
+
+- **Import `zValidator` from `services/validate`, never from `@hono/zod-validator`.**
+  The package's default rejection body is the raw `ZodError`, which has no
+  `message` field — and the web client reads `message` then `error`, so every
+  failed validation reached the UI as the literal string "[object Object]". The
+  wrapper returns `{ message, statusCode }` like every other error here, naming
+  the field and the rule. This hid a real bug for a while: `occupation` was
+  capped at 300 characters while a genuine stored answer was 685, so the work
+  screen silently refused to save the user's own data.
+- **The work fields are prose boxes and their caps must stay generous**
+  (`WORK_FIELD_MAX`, 2000). People answer "contract type and hours" with a
+  paragraph, and a fact may carry a `[[note]]` on top of that.
 
 - **Tests share the development database.** There is no separate test DB. Tests
   create real rows in `packages/db/local_leaseops.db` — always clean up in

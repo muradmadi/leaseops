@@ -13,6 +13,8 @@ src/components/          AddListingModal — the multi-step evaluation wizard
                          WorkProfileFields / HouseholdPersonaFields — the two
                          halves of the tenant story, shared by onboarding and
                          the AboutYou gate so the questions cannot drift
+                         AnnotationHint — teaches the [[ ]] convention, shown
+                         wherever those two halves are typed
 src/lib/
   api.ts                 apiFetch wrapper; throws on non-2xx
   useApartments.ts       Listing queries/mutations + the SSE subscription
@@ -93,6 +95,13 @@ container. **Never** `dangerouslySetInnerHTML` — this is untrusted content.
 
 ## Gotchas
 
+- **`AboutYouView` serves three routes and one gate.** `/profile` passes
+  `section="work"`, `/household` passes `section="household"`, and `/about-you`
+  plus the gate show both. Splitting it is safe precisely because the two saves
+  were already separate (see below); `handleDone` must keep saving only the half
+  on screen, and the `employmentStatus` gate must not block a household-only
+  edit. Settings links to the two halves separately, in the order onboarding
+  asks for them.
 - **`AboutYouView` is a gate, not a page.** `App.tsx` renders it in place of
   everything else when the signed-in member's `workProfile` is null — the
   criteria belong to the household and were filled in once, so a partner who
@@ -101,6 +110,20 @@ container. **Never** `dangerouslySetInnerHTML` — this is untrusted content.
   other member's job. Answering is what closes it, and `employmentStatus` is the
   answer that counts because every applicant has one, "not working" included.
   Never preselect it — same reasoning as the gender control in `Segmented`.
+- **Tenant notes in `[[double brackets]]` are instructions, not facts.** Any
+  persona or work answer may carry one — "don't volunteer this", "only if they
+  ask". The API strips them before a message is written; **the web strips them
+  only where a field is quoted back** (the Settings summary, the onboarding
+  review), never in an editor, where the raw text is what the user is editing.
+  `stripAnnotations` in `lib/persona.ts` is a deliberate copy of the API's — this
+  package cannot import runtime code from `apps/api`, and `@leaseops/db` is
+  types-only. Both are tested on their own side.
+- **Onboarding is eight screens, and 5–7 are one unit**: what the outreach pages
+  are for, then your own work, then the household's shared facts. Work and the
+  household shared one screen divided by a rule, which is how answers ended up in
+  the wrong box — a guarantor typed into the box about your job cannot be held
+  back later, because it is no longer the answer to the question it is filed
+  under. Keep them as separate screens.
 - **`OutreachAuthorControl` must resolve in the same order the API does** —
   `outreachAuthorId`, then `createdBy`, then the first (oldest) member. It shows
   who the next draft speaks as, so a control that resolved differently from

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { zValidator } from '@hono/zod-validator';
+import { zValidator } from '../services/validate';
 import {
   listApartments,
   findApartmentForHousehold,

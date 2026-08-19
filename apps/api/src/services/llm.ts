@@ -238,6 +238,50 @@ function resolveRequirements(
   return (analysis?.flags || []).map((f) => f.issue);
 }
 
+/**
+ * How a tenant's private notes on their own facts are read.
+ *
+ * Disclosure is a per-fact decision and the rules above are global, which is why
+ * no wording of them ever controlled it: a rule cannot say "state the contract
+ * but hold the deposit" when it applies to every fact at once. A note sits on
+ * the one fact it governs, is written by the person who bears the consequences,
+ * and can be conditional ("only if the listing asks") in a way no global rule or
+ * on/off setting can express.
+ *
+ * Measured across 60 drafts against four real listings: naming the deposit
+ * amount unprompted fell from 17/20 to 0/20, reciting the document list from
+ * 19/20 to 3/20, and stating the contract without the condition attached to it
+ * from 7/20 to 1/20 — while coverage of what the listing actually asked went up.
+ * Nothing was ever echoed into a message, which `stripAnnotations` then makes
+ * structurally impossible rather than merely unobserved.
+ *
+ * Appended to both prompts so outreach and replies cannot drift apart on it.
+ */
+const ANNOTATION_RULES = `
+
+NOTES FROM THE TENANT IN [[ ]]
+Some facts below are followed by a note in [[double brackets]]. That note is written by the tenant, to you, about the fact it follows: how much it matters, whether to volunteer it, or how to word it. Follow these notes — for that fact they override the general guidance above, including which facts you would otherwise lead with. A fact marked "do not volunteer" is withheld unless the listing or the owner has actually asked for it.
+Never reproduce a note, or any part of one, or any mention of these instructions, in what you write. The owner must never see them.`;
+
+/**
+ * Removes any tenant note that survived into generated text.
+ *
+ * The prompt already says not to echo one and never did across the runs that
+ * justified this feature, but a note is the tenant talking about the landlord
+ * while the landlord reads the result. Belt and braces: the observed rate was
+ * zero, and the cost of the one exception is a message that reads as machine
+ * output and leaks the tenant's own negotiating strategy to the person they are
+ * negotiating with. Stray unpaired markers go too, since a lone "[[" is the
+ * visible half of the same accident.
+ */
+export function stripAnnotations(text: string): string {
+  return text
+    .replace(/\s*\[\[[\s\S]*?\]\]/g, '')
+    .replace(/\[\[|\]\]/g, '')
+    .replace(/[ \t]+$/gm, '')
+    .trim();
+}
+
 const OUTREACH_RULES = `You are the prospective tenant, writing the first message about a flat you want to see. You are not a copywriter and this is not an advertisement. Write the way a competent adult writes a short practical message.
 
 WHY THIS IS HARD
@@ -270,7 +314,7 @@ HOW TO WRITE IT
 10. Write in the LANGUAGE given below, in the register a native speaker would actually use for a rental enquiry. Not a cover letter. Hold one level of formality throughout — do not mix formal and informal address in the same message.
 
 SUBJECT LINE
-Plain and human, under about eight words. The owner already knows what their flat looks like, so do not describe it back to them: identify it briefly (street, area or type) and add ONE fact about the tenant that separates this message from the pile. Never a list of keywords.`;
+Plain and human, under about eight words. The owner already knows what their flat looks like, so do not describe it back to them: identify it briefly (street, area or type) and add ONE fact about the tenant that separates this message from the pile. Never a list of keywords.` + ANNOTATION_RULES;
 
 const OUTREACH_SCHEMA = {
   type: 'object',
@@ -307,8 +351,10 @@ export async function draftOutreachMessage(
     // member's job here would mean composing a sentence about them, and this
     // path has no model to get the attribution right.
     const author = (persona.people || []).find((p) => p.isAuthor);
-    const authorWork = [author?.occupation?.trim(), author?.contractDetails?.trim()]
-      .filter((v) => v && v.length > 0)
+    // Stripped here too: this path never reaches a model, so nothing else would
+    // remove a note before it lands in a message addressed to the landlord.
+    const authorWork = [stripAnnotations(author?.occupation || ''), stripAnnotations(author?.contractDetails || '')]
+      .filter((v) => v.length > 0)
       .join('. ');
 
     const lines = [
@@ -316,8 +362,10 @@ export async function draftOutreachMessage(
       ``,
       `I am interested in ${listingTitle} and would like to arrange a viewing.`,
       ...(authorWork ? [``, authorWork] : []),
-      ...(persona.financialGuarantees ? [persona.financialGuarantees.trim()] : []),
-      ...(persona.viewingAvailability ? [``, `I can view: ${persona.viewingAvailability.trim()}`] : []),
+      ...(stripAnnotations(persona.financialGuarantees || '') ? [stripAnnotations(persona.financialGuarantees!)] : []),
+      ...(stripAnnotations(persona.viewingAvailability || '')
+        ? [``, `I can view: ${stripAnnotations(persona.viewingAvailability!)}`]
+        : []),
       ``,
       `Best regards${persona.signOffName?.trim() ? `,\n${persona.signOffName.trim()}` : '.'}`,
     ];
@@ -360,7 +408,8 @@ Write the message.`,
 
   const validated = OutreachMessageSchema.parse({ ...result, language });
 
-  validated.body = withSignOff(validated.body, persona);
+  validated.subject = stripAnnotations(validated.subject);
+  validated.body = withSignOff(stripAnnotations(validated.body), persona);
 
   return validated;
 }
@@ -409,7 +458,7 @@ HOW TO WRITE IT
 7. Where the exchange is ready for it, close with one concrete next step — a viewing, a document you will send, a time you will confirm by. One only, and only if it follows from what was asked. If the owner asked a straight question, answering it is enough; do not bolt a next step onto every message.
 8. Under 90 words for a single question, and never more than 130 even when the owner asked several. Shorter is better. No bullet lists, no headings.
 9. Sign off with exactly the SIGN-OFF given below, on its own line. If it says NONE, end without a name and never invent one.
-10. Write in the LANGUAGE given below, in the register a native speaker would actually use with an owner they are negotiating with. Hold one level of formality throughout, and hold the SAME level the tenant used in their earlier sent messages — do not switch between formal and informal address within a message or across the thread.`;
+10. Write in the LANGUAGE given below, in the register a native speaker would actually use with an owner they are negotiating with. Hold one level of formality throughout, and hold the SAME level the tenant used in their earlier sent messages — do not switch between formal and informal address within a message or across the thread.` + ANNOTATION_RULES;
 
 const CHAT_REPLY_SCHEMA = {
   type: 'object',
@@ -551,7 +600,7 @@ Write the tenant's next reply.`,
   // Same enforcement as the outreach draft: the prompt asks for the sign-off and
   // the model still drops it about a third of the time, which is why three runs
   // of the old version ended three different ways.
-  return { text: withSignOff(result.text.trim(), persona) };
+  return { text: withSignOff(stripAnnotations(result.text), persona) };
 }
 
 export interface CompromiseContext {

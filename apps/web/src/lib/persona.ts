@@ -78,3 +78,22 @@ export function personasMatch(a: HouseholdPersona, b: HouseholdPersona): boolean
     (key) => a[key].trim() === b[key].trim()
   );
 }
+
+/**
+ * Drops the tenant's own [[notes]] from a value being shown back as prose.
+ *
+ * A note is an instruction to the drafter, not part of the fact, so a summary
+ * that reads it out is showing the reader something that will never appear in a
+ * message. Editors keep the raw text — the note is only in the way where the
+ * field is being *quoted* rather than typed into.
+ *
+ * Deliberately a copy of the API's `stripAnnotations` rather than an import:
+ * `@leaseops/db` is types-only here and nothing in `apps/api` is importable at
+ * all. Both sides are covered by their own tests.
+ */
+export function stripAnnotations(text: string): string {
+  return text
+    .replace(/\s*\[\[[\s\S]*?\]\]/g, '')
+    .replace(/\[\[|\]\]/g, '')
+    .trim();
+}
