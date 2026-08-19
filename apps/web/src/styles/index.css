@@ -22,6 +22,12 @@
 }
 
 @layer base {
+  /* Dark only, so the native widgets — select menus, scrollbars, the caret —
+     are told as much rather than rendering a light popup over a dark page. */
+  :root {
+    color-scheme: dark;
+  }
+
   * {
     border-color: var(--color-zinc-800);
   }

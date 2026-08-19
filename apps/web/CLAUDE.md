@@ -18,6 +18,8 @@ src/components/          AddListingModal — the multi-step evaluation wizard
 src/lib/
   api.ts                 apiFetch wrapper; throws on non-2xx
   useApartments.ts       Listing queries/mutations + the SSE subscription
+  board.ts               Search, sort and filtering for the dashboard, pure and
+                         tested; the facts a card shows are read here too
   useAuth.ts             Session state
   useProfile.ts          Onboarding profile
   persona.ts             The household persona JSON shape, parsed tolerantly
@@ -95,6 +97,19 @@ container. **Never** `dangerouslySetInnerHTML` — this is untrusted content.
 
 ## Gotchas
 
+- **The dashboard card is a link with its controls floated above it.** An
+  absolutely positioned `<Link>` on `z-10` covers the whole card, which is what
+  makes the title, the price and the facts line a tap target instead of
+  decoration. **Anything interactive added to a card must carry `relative z-20`**
+  or it sits under that overlay and opens the listing instead of doing its job.
+  The bottom row, the stage control, the activate button and the set-aside block
+  all do. The external link is the one `<a>` inside a card and it is a sibling of
+  the overlay, never a child — an `<a>` inside an `<a>` is invalid HTML.
+- **Nothing on the dashboard is stored between sessions.** The search box, the
+  sort and the filters reset on reload, deliberately: a filter that survived
+  would be indistinguishable from a board that had lost its listings. A filter
+  naming something that no longer exists (the last listing in a neighbourhood
+  gets archived) falls back to unfiltered for the same reason.
 - **`AboutYouView` serves three routes and one gate.** `/profile` passes
   `section="work"`, `/household` passes `section="household"`, and `/about-you`
   plus the gate show both. Splitting it is safe precisely because the two saves
