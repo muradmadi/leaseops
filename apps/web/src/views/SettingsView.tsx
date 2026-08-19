@@ -14,6 +14,9 @@ import {
   Sparkles,
   Settings,
   Home,
+  ClipboardList,
+  SlidersHorizontal,
+  ChevronDown,
   Copy,
   Check,
   RefreshCw,
@@ -76,6 +79,8 @@ export default function SettingsView() {
   const purgeMutation = usePermanentlyDeleteApartment();
   const rescoreAll = useRescoreAll();
   const [confirmPurgeId, setConfirmPurgeId] = useState<string | null>(null);
+  /** The archive is a list of listings, not a setting; it opens on request. */
+  const [showArchive, setShowArchive] = useState(false);
 
   const [copied, setCopied] = useState(false);
   const [confirmRotate, setConfirmRotate] = useState(false);
@@ -107,6 +112,7 @@ export default function SettingsView() {
   const [showKeyForm, setShowKeyForm] = useState(false);
   const [confirmRemoveKey, setConfirmRemoveKey] = useState(false);
   const [showAllModels, setShowAllModels] = useState(false);
+  const [showModelPicker, setShowModelPicker] = useState(false);
 
   const llm = household?.llm;
   /** Your own membership row — the name, gender and style the editor works on. */
@@ -129,6 +135,13 @@ export default function SettingsView() {
     ];
   })();
   const visibleModels = showAllModels ? models : models.slice(0, MODELS_SHOWN_COLLAPSED);
+  /**
+   * The model in force, named for the collapsed row. Falls back to the stored
+   * id rather than a placeholder — while the catalogue loads, the id is the
+   * truth and a friendlier word for it would be invented.
+   */
+  const selectedModelLabel =
+    models.find((m) => m.id === llm?.model)?.displayName || llm?.model || 'Not set';
   const payer = household?.members.find((m) => m.id === llm?.setBy);
   const payerIsMe = Boolean(llm?.setBy && llm.setBy === authState?.user?.id);
   /** What the household is billed under, in words. Null when nothing is set. */
@@ -401,6 +414,104 @@ export default function SettingsView() {
         </section>
 
         {/*
+          Your search: the criteria every listing is scored against, and the
+          button that reapplies them to the ones already entered.
+
+          Second from the top because this is the part that moves during a hunt.
+          It used to be last, under the heading "Preferences" — below the API
+          key, and below every listing you had ever archived.
+        */}
+        <section className="space-y-4">
+          <h2 className="text-sm font-bold text-zinc-500 uppercase tracking-widest pl-1">
+            Search criteria
+          </h2>
+          
+          <div className="bg-zinc-900/50 border border-zinc-800/80 rounded-2xl overflow-hidden">
+            <Link href="/onboarding">
+              <button className="w-full p-4 sm:p-5 flex items-center justify-between hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800">
+                <div className="flex items-center gap-3.5">
+                  {/* Neither amber nor Sparkles. Amber means "be careful" on this
+                      screen — leaving the household, the join code, offline output —
+                      and Sparkles means AI. This is neither: it is the weighting. */}
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
+                    <SlidersHorizontal className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <div>
+                    <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
+                      Onboarding Wizard
+                    </p>
+                    <p className="text-xs text-zinc-500 mt-0.5">
+                      Update your must-have features and target rent
+                    </p>
+                  </div>
+                </div>
+              </button>
+            </Link>
+
+            {/* Sits under the wizard because changing your criteria is exactly
+                when the stored scores stop matching them. */}
+            <div className="border-t border-zinc-800/80">
+              <button
+                onClick={() => rescoreAll.mutate()}
+                disabled={rescoreAll.isPending}
+                className="w-full p-4 sm:p-5 flex items-center justify-between gap-3 hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800 disabled:opacity-60 disabled:cursor-wait"
+              >
+                <div className="flex items-center gap-3.5 min-w-0">
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center border border-blue-500/20 shrink-0">
+                    {rescoreAll.isPending ? (
+                      <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+                    ) : (
+                      <Calculator className="w-5 h-5 text-blue-400" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
+                      {rescoreAll.isPending ? 'Re-scoring…' : 'Re-score every listing'}
+                    </p>
+                    <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
+                      Runs the maths again on what you already entered. Costs nothing and
+                      changes nothing else — your ratings, notes, threads and pipeline
+                      stages are untouched.
+                    </p>
+                  </div>
+                </div>
+              </button>
+
+              {/* Reported rather than assumed: the useful answer is how many
+                  actually moved, and "none" is a real and common result. */}
+              {rescoreAll.isSuccess && !rescoreAll.isPending && (
+                <div className="px-4 sm:px-5 pb-4 sm:pb-5 -mt-1">
+                  <p className="text-xs text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2.5 leading-relaxed">
+                    Re-scored {rescoreAll.data.rescored}{' '}
+                    {rescoreAll.data.rescored === 1 ? 'listing' : 'listings'}
+                    {rescoreAll.data.archived > 0 && `, ${rescoreAll.data.archived} of them archived`}
+                    .{' '}
+                    {rescoreAll.data.scoreChanged === 0
+                      ? 'No score changed — they already matched your current criteria.'
+                      : `${rescoreAll.data.scoreChanged} ${
+                          rescoreAll.data.scoreChanged === 1 ? 'score' : 'scores'
+                        } changed${
+                          rescoreAll.data.statusChanged > 0
+                            ? `, and ${rescoreAll.data.statusChanged} moved between qualified and fell-short.`
+                            : '.'
+                        }`}
+                    {rescoreAll.data.failed > 0 && ` ${rescoreAll.data.failed} could not be scored.`}
+                  </p>
+                </div>
+              )}
+
+              {rescoreAll.isError && (
+                <div className="px-4 sm:px-5 pb-4 sm:pb-5 -mt-1">
+                  <p className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2.5 leading-relaxed">
+                    {(rescoreAll.error as Error).message}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+
+        {/*
           Household Section — what the group is, who is in it, and how someone
           gets in. Everything personal now lives on the Account card above: the
           work summary that used to sit here was `users.workProfile`, which is
@@ -574,7 +685,9 @@ export default function SettingsView() {
               <button className="w-full p-4 sm:p-5 flex items-center justify-between hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800">
                 <div className="flex items-center gap-3.5">
                   <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 shrink-0">
-                    <Home className="w-5 h-5 text-emerald-400" />
+                    {/* Not Home: that is the tile on the household's own name,
+                        four rows up. Two meanings, one glyph, one card. */}
+                    <ClipboardList className="w-5 h-5 text-emerald-400" />
                   </div>
                   <div className="min-w-0">
                     <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
@@ -938,19 +1051,39 @@ export default function SettingsView() {
               )}
             </div>
 
-            {/* Model — the cost lever, next to the person paying it */}
+            {/*
+              Model — the cost lever, next to the person paying it, and closed
+              until asked for. Expanded it was the tallest block on this screen
+              and one of the least-touched controls in the app — four model cards
+              before the "show all", standing in front of everything below them,
+              for a setting that moves when Anthropic ships a model.
+            */}
             <div className="p-4 sm:p-5 space-y-3">
-              <div>
-                <p className="text-xs text-zinc-500 font-medium mb-0.5">Model</p>
-                <p className="text-xs text-zinc-500 leading-relaxed">
-                  Applies to every AI feature in the household. Charged to the key above.
-                </p>
-              </div>
+              <button
+                type="button"
+                onClick={() => setShowModelPicker((v) => !v)}
+                aria-expanded={showModelPicker}
+                className="w-full min-h-[44px] flex items-center justify-between gap-3 text-left cursor-pointer group"
+              >
+                <div className="min-w-0">
+                  <p className="text-xs text-zinc-500 font-medium mb-0.5">Model</p>
+                  <p className="font-bold text-zinc-200 text-sm truncate group-hover:text-white transition-colors">
+                    {modelsLoading ? 'Loading models from Anthropic...' : selectedModelLabel}
+                  </p>
+                </div>
+                <ChevronDown
+                  className={`w-4 h-4 shrink-0 text-zinc-500 transition-transform ${
+                    showModelPicker ? 'rotate-180' : ''
+                  }`}
+                />
+              </button>
 
-              {modelsLoading ? (
-                <p className="text-xs text-zinc-500">Loading models from Anthropic...</p>
-              ) : (
+              {showModelPicker && !modelsLoading && (
                 <>
+                  <p className="text-xs text-zinc-500 leading-relaxed">
+                    Applies to every AI feature in the household. Charged to the key above.
+                  </p>
+
                   <div className="grid gap-2">
                     {visibleModels.map((model) => {
                       const active = llm?.model === model.id;
@@ -959,7 +1092,13 @@ export default function SettingsView() {
                         <button
                           key={model.id}
                           type="button"
-                          onClick={() => setModelMutation.mutate(model.id)}
+                          onClick={() =>
+                            setModelMutation.mutate(model.id, {
+                              // Picking one ends the errand. Leaving the list open
+                              // only puts the rest of the card back behind a scroll.
+                              onSuccess: () => setShowModelPicker(false),
+                            })
+                          }
                           disabled={setModelMutation.isPending || active}
                           className={`w-full min-h-[44px] text-left rounded-xl px-4 py-3 border transition-all duration-150 active:scale-[0.98] cursor-pointer disabled:cursor-default ${
                             active
@@ -1027,7 +1166,14 @@ export default function SettingsView() {
           </div>
         </section>
 
-        {/* Archive */}
+        {/*
+          The archive, last and closed.
+
+          It is the one thing on this screen that is not a setting: a list of
+          listings with per-row actions, and the only section whose height grows
+          with your data. Open, it stood between the criteria and the bottom of
+          the page for as long as your deleted listings were numerous.
+        */}
         <section className="space-y-4">
           <h2 className="text-sm font-bold text-zinc-500 uppercase tracking-widest pl-1">Archive</h2>
 
@@ -1048,159 +1194,108 @@ export default function SettingsView() {
                 </div>
               </div>
             ) : (
-              <ul className="divide-y divide-zinc-800/50">
-                {archived.map((apt) => (
-                  <li key={apt.id} className="p-4 sm:p-5 space-y-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <p className="font-bold text-zinc-200 text-sm break-words">{apt.title}</p>
-                        <p className="text-xs text-zinc-500 mt-0.5">
-                          {apt.mcdaScore !== null && apt.mcdaScore !== undefined
-                            ? `${apt.mcdaScore}% match`
-                            : 'Not scored'}
-                          {' · '}
-                          {apt.currency} {apt.price}
-                        </p>
-                      </div>
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Closing with a delete armed would leave it armed for the
+                    // next open, on a row nobody is looking at.
+                    setConfirmPurgeId(null);
+                    setShowArchive((v) => !v);
+                  }}
+                  aria-expanded={showArchive}
+                  className="w-full p-4 sm:p-5 flex items-center justify-between gap-3 hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800"
+                >
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center border border-zinc-700/50 shrink-0">
+                      <Archive className="w-5 h-5 text-zinc-400" />
                     </div>
+                    <div className="min-w-0">
+                      <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
+                        {archived.length} archived {archived.length === 1 ? 'listing' : 'listings'}
+                      </p>
+                      <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
+                        Deleted from the dashboard, kept here rather than destroyed.
+                      </p>
+                    </div>
+                  </div>
+                  <ChevronDown
+                    className={`w-4 h-4 shrink-0 text-zinc-500 transition-transform ${
+                      showArchive ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
 
-                    {confirmPurgeId === apt.id ? (
-                      <div className="space-y-2">
-                        <p className="text-xs text-red-400 leading-relaxed">
-                          Delete permanently? This also removes its conversation and cannot be
-                          undone.
-                        </p>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              purgeMutation.mutate(apt.id, { onSettled: () => setConfirmPurgeId(null) })
-                            }
-                            disabled={purgeMutation.isPending}
-                            className="flex-1 min-h-[44px] rounded-xl bg-red-500 hover:bg-red-600 text-white font-bold text-sm transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
-                          >
-                            {purgeMutation.isPending ? 'Deleting...' : 'Delete forever'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setConfirmPurgeId(null)}
-                            className="flex-1 min-h-[44px] rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-sm border border-zinc-700/50 transition-all active:scale-[0.98] cursor-pointer"
-                          >
-                            Cancel
-                          </button>
+                {showArchive && (
+                  <ul className="divide-y divide-zinc-800/50 border-t border-zinc-800/50">
+                    {archived.map((apt) => (
+                      <li key={apt.id} className="p-4 sm:p-5 space-y-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="font-bold text-zinc-200 text-sm break-words">{apt.title}</p>
+                            <p className="text-xs text-zinc-500 mt-0.5">
+                              {apt.mcdaScore !== null && apt.mcdaScore !== undefined
+                                ? `${apt.mcdaScore}% match`
+                                : 'Not scored'}
+                              {' · '}
+                              {apt.currency} {apt.price}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => restoreMutation.mutate(apt.id)}
-                          disabled={restoreMutation.isPending}
-                          className="flex-1 min-h-[44px] rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-sm border border-zinc-700/50 flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
-                        >
-                          <RotateCcw className="w-4 h-4" />
-                          <span>Restore</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmPurgeId(apt.id)}
-                          title="Delete permanently"
-                          className="w-11 min-w-[44px] min-h-[44px] rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 flex items-center justify-center transition-all active:scale-95 cursor-pointer"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
+
+                        {confirmPurgeId === apt.id ? (
+                          <div className="space-y-2">
+                            <p className="text-xs text-red-400 leading-relaxed">
+                              Delete permanently? This also removes its conversation and cannot be
+                              undone.
+                            </p>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  purgeMutation.mutate(apt.id, { onSettled: () => setConfirmPurgeId(null) })
+                                }
+                                disabled={purgeMutation.isPending}
+                                className="flex-1 min-h-[44px] rounded-xl bg-red-500 hover:bg-red-600 text-white font-bold text-sm transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                              >
+                                {purgeMutation.isPending ? 'Deleting...' : 'Delete forever'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmPurgeId(null)}
+                                className="flex-1 min-h-[44px] rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-sm border border-zinc-700/50 transition-all active:scale-[0.98] cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => restoreMutation.mutate(apt.id)}
+                              disabled={restoreMutation.isPending}
+                              className="flex-1 min-h-[44px] rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-sm border border-zinc-700/50 flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                              <span>Restore</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmPurgeId(apt.id)}
+                              title="Delete permanently"
+                              className="w-11 min-w-[44px] min-h-[44px] rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 flex items-center justify-center transition-all active:scale-95 cursor-pointer"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
             )}
-          </div>
-        </section>
-
-        {/* Preferences Section */}
-        <section className="space-y-4">
-          <h2 className="text-sm font-bold text-zinc-500 uppercase tracking-widest pl-1">Preferences</h2>
-          
-          <div className="bg-zinc-900/50 border border-zinc-800/80 rounded-2xl overflow-hidden">
-            <Link href="/onboarding">
-              <button className="w-full p-4 sm:p-5 flex items-center justify-between hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800">
-                <div className="flex items-center gap-3.5">
-                  <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center border border-amber-500/20">
-                    <Sparkles className="w-5 h-5 text-amber-400" />
-                  </div>
-                  <div>
-                    <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
-                      Onboarding Wizard
-                    </p>
-                    <p className="text-xs text-zinc-500 mt-0.5">
-                      Update your must-have features and target rent
-                    </p>
-                  </div>
-                </div>
-              </button>
-            </Link>
-
-            {/* Sits under the wizard because changing your criteria is exactly
-                when the stored scores stop matching them. */}
-            <div className="border-t border-zinc-800/80">
-              <button
-                onClick={() => rescoreAll.mutate()}
-                disabled={rescoreAll.isPending}
-                className="w-full p-4 sm:p-5 flex items-center justify-between gap-3 hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800 disabled:opacity-60 disabled:cursor-wait"
-              >
-                <div className="flex items-center gap-3.5 min-w-0">
-                  <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center border border-blue-500/20 shrink-0">
-                    {rescoreAll.isPending ? (
-                      <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
-                    ) : (
-                      <Calculator className="w-5 h-5 text-blue-400" />
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
-                      {rescoreAll.isPending ? 'Re-scoring…' : 'Re-score every listing'}
-                    </p>
-                    <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
-                      Runs the maths again on what you already entered. Costs nothing and
-                      changes nothing else — your ratings, notes, threads and pipeline
-                      stages are untouched.
-                    </p>
-                  </div>
-                </div>
-              </button>
-
-              {/* Reported rather than assumed: the useful answer is how many
-                  actually moved, and "none" is a real and common result. */}
-              {rescoreAll.isSuccess && !rescoreAll.isPending && (
-                <div className="px-4 sm:px-5 pb-4 sm:pb-5 -mt-1">
-                  <p className="text-xs text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2.5 leading-relaxed">
-                    Re-scored {rescoreAll.data.rescored}{' '}
-                    {rescoreAll.data.rescored === 1 ? 'listing' : 'listings'}
-                    {rescoreAll.data.archived > 0 && `, ${rescoreAll.data.archived} of them archived`}
-                    .{' '}
-                    {rescoreAll.data.scoreChanged === 0
-                      ? 'No score changed — they already matched your current criteria.'
-                      : `${rescoreAll.data.scoreChanged} ${
-                          rescoreAll.data.scoreChanged === 1 ? 'score' : 'scores'
-                        } changed${
-                          rescoreAll.data.statusChanged > 0
-                            ? `, and ${rescoreAll.data.statusChanged} moved between qualified and fell-short.`
-                            : '.'
-                        }`}
-                    {rescoreAll.data.failed > 0 && ` ${rescoreAll.data.failed} could not be scored.`}
-                  </p>
-                </div>
-              )}
-
-              {rescoreAll.isError && (
-                <div className="px-4 sm:px-5 pb-4 sm:pb-5 -mt-1">
-                  <p className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2.5 leading-relaxed">
-                    {(rescoreAll.error as Error).message}
-                  </p>
-                </div>
-              )}
-            </div>
           </div>
         </section>
 
