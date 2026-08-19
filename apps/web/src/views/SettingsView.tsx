@@ -7,7 +7,6 @@ import Segmented, {
 } from '../components/Segmented';
 import Avatar, { AVATAR_STYLE_OPTIONS, type AvatarStyle } from '../components/Avatar';
 import { Link } from 'wouter';
-import { stripAnnotations } from '../lib/persona';
 import {
   ArrowLeft,
   UserRound,
@@ -19,6 +18,7 @@ import {
   Check,
   RefreshCw,
   Users,
+  Pencil,
   AlertTriangle,
   Archive,
   RotateCcw,
@@ -33,6 +33,7 @@ import {
   useHousehold,
   useRotateJoinCode,
   useJoinHousehold,
+  useRenameHousehold,
   useUpdateMember,
   useSetLlmKey,
   useClearLlmKey,
@@ -65,6 +66,7 @@ export default function SettingsView() {
   const { data: household, isLoading: householdLoading } = useHousehold();
   const rotateMutation = useRotateJoinCode();
   const joinMutation = useJoinHousehold();
+  const renameMutation = useRenameHousehold();
   const memberMutation = useUpdateMember();
   const [draftGender, setDraftGender] = useState<Gender | ''>('');
   const [draftForm, setDraftForm] = useState<GrammaticalForm | ''>('');
@@ -81,6 +83,20 @@ export default function SettingsView() {
   const [showJoin, setShowJoin] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [draftName, setDraftName] = useState('');
+  const [editingHouseholdName, setEditingHouseholdName] = useState(false);
+  const [draftHouseholdName, setDraftHouseholdName] = useState('');
+  /**
+   * What the join actually did, kept here rather than read off the mutation.
+   *
+   * Joining clears the whole query cache, so the mutation itself is not a
+   * reliable place to read from afterwards — and this is the one report the user
+   * cannot reconstruct by looking around: the household they left is gone from
+   * their view by the time they would want to check on it.
+   */
+  const [joinResult, setJoinResult] = useState<{
+    llmKeyCleared: boolean;
+    abandonedHouseholdRemoved: boolean;
+  } | null>(null);
 
   const setKeyMutation = useSetLlmKey();
   const clearKeyMutation = useClearLlmKey();
@@ -342,6 +358,34 @@ export default function SettingsView() {
               )}
             </div>
 
+            {/*
+              Your work, on the card about you.
+
+              It is `users.workProfile` — the one part of the tenant story that
+              belongs to a person rather than to the household — so it sits with
+              the name and the gender that are also yours, not under the join
+              code. The link goes to the same screen the gate first asked on, so
+              there is one implementation of the questions rather than two.
+            */}
+            <Link href="/profile">
+              <button className="w-full p-4 sm:p-5 flex items-center justify-between hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center border border-blue-500/20 shrink-0">
+                    <UserRound className="w-5 h-5 text-blue-400" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
+                      Edit your profile
+                    </p>
+                    <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
+                      Your job, contract, income and right to work. Yours alone — your partner
+                      answers it for themselves.
+                    </p>
+                  </div>
+                </div>
+              </button>
+            </Link>
+
             {/* Logout Action */}
             <button
               onClick={() => logoutMutation.mutate()}
@@ -356,31 +400,125 @@ export default function SettingsView() {
           </div>
         </section>
 
-        {/* Household Section */}
+        {/*
+          Household Section — what the group is, who is in it, and how someone
+          gets in. Everything personal now lives on the Account card above: the
+          work summary that used to sit here was `users.workProfile`, which is
+          the one part of the tenant story a household does not share.
+        */}
         <section className="space-y-4">
           <h2 className="text-sm font-bold text-zinc-500 uppercase tracking-widest pl-1">Household</h2>
 
           <div className="bg-zinc-900/50 border border-zinc-800/80 rounded-2xl overflow-hidden divide-y divide-zinc-800/50">
-            <div className="p-4 sm:p-5 flex items-center gap-3.5">
-              <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center border border-blue-500/20 shrink-0">
-                <Home className="w-5 h-5 text-blue-400" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-xs text-zinc-500 font-medium mb-0.5">Household</p>
-                <p className="font-bold text-zinc-200 text-sm sm:text-base truncate">
-                  {householdLoading ? 'Loading...' : household?.name?.trim() || 'Unnamed household'}
-                </p>
-              </div>
+            {/*
+              The name, and — new — a way to change it. The route and the hook
+              have both existed since the household was first written; nothing
+              called them, so a household created without a name at signup, where
+              the field is optional, read "Unnamed household" permanently.
+            */}
+            <div className="p-4 sm:p-5">
+              {editingHouseholdName ? (
+                <div className="space-y-3">
+                  <label
+                    htmlFor="householdName"
+                    className="block text-xs font-bold uppercase tracking-wider text-zinc-400"
+                  >
+                    Household name
+                  </label>
+                  <input
+                    id="householdName"
+                    type="text"
+                    value={draftHouseholdName}
+                    onChange={(e) => setDraftHouseholdName(e.target.value)}
+                    placeholder="The Madi household"
+                    className="w-full bg-zinc-950 border border-zinc-800 focus:border-blue-500/60 rounded-xl px-4 py-3 text-[16px] sm:text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-all min-h-[48px]"
+                  />
+                  <p className="text-xs text-zinc-500 leading-relaxed">
+                    Yours alone to recognise this search by. It is never sent to a landlord —
+                    messages are signed with the members' names.
+                  </p>
+                  {renameMutation.isError && (
+                    <p className="text-xs text-red-400">{(renameMutation.error as Error).message}</p>
+                  )}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        renameMutation.mutate(draftHouseholdName, {
+                          onSuccess: () => setEditingHouseholdName(false),
+                        })
+                      }
+                      disabled={renameMutation.isPending}
+                      className="flex-1 min-h-[44px] rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-bold text-sm transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                    >
+                      {renameMutation.isPending ? 'Saving...' : 'Save'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingHouseholdName(false);
+                        renameMutation.reset();
+                      }}
+                      className="flex-1 min-h-[44px] rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold text-sm border border-zinc-700/50 transition-all active:scale-[0.98] cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-500/10 flex items-center justify-center border border-blue-500/20 shrink-0">
+                    <Home className="w-6 h-6 text-blue-400" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="font-bold text-zinc-100 text-base sm:text-lg truncate">
+                      {householdLoading ? (
+                        'Loading...'
+                      ) : (
+                        household?.name?.trim() || (
+                          <span className="text-zinc-500 font-semibold">Unnamed household</span>
+                        )
+                      )}
+                    </p>
+                    {/* The member count belongs here rather than as a heading over
+                        the list below — it is a fact about the household, and it
+                        stops the eyebrow above repeating the section title. */}
+                    <p className="text-xs text-zinc-500">
+                      {household
+                        ? `${household.members.length} member${household.members.length === 1 ? '' : 's'}`
+                        : 'Loading members...'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftHouseholdName(household?.name?.trim() || '');
+                      renameMutation.reset();
+                      setEditingHouseholdName(true);
+                    }}
+                    disabled={!household}
+                    title="Rename household"
+                    aria-label="Rename household"
+                    className="w-11 h-11 min-w-[44px] rounded-xl bg-zinc-800/70 hover:bg-zinc-800 border border-zinc-700/50 flex items-center justify-center text-zinc-400 hover:text-zinc-200 transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 shrink-0"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
             </div>
 
-            {/* Members */}
-            <div className="p-4 sm:p-5 space-y-2.5">
+            {/*
+              Members, and the signature underneath them rather than in a panel
+              of its own: the sign-off is built from exactly these names, so the
+              two belong within sight of each other.
+            */}
+            <div className="p-4 sm:p-5 space-y-3">
               <div className="flex items-center gap-2 text-xs text-zinc-500 font-medium">
                 <Users className="w-3.5 h-3.5" />
-                <span>{household ? `${household.members.length} member${household.members.length === 1 ? '' : 's'}` : 'Members'}</span>
+                <span>Members</span>
               </div>
               {household?.members.length ? (
-                <ul className="space-y-1.5">
+                <ul className="space-y-2">
                   {household.members.map((member) => (
                     <li key={member.id} className="flex items-center gap-2.5 text-sm">
                       <Avatar
@@ -394,8 +532,13 @@ export default function SettingsView() {
                         {member.displayName?.trim() || member.username}
                       </span>
                       {member.id === authState?.user?.id && (
-                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full shrink-0">
                           You
+                        </span>
+                      )}
+                      {member.id === llm?.setBy && llm?.keySet && (
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-violet-300 bg-violet-500/10 border border-violet-500/20 px-2 py-0.5 rounded-full shrink-0">
+                          Pays
                         </span>
                       )}
                     </li>
@@ -404,56 +547,47 @@ export default function SettingsView() {
               ) : (
                 <p className="text-sm text-zinc-500">No members loaded.</p>
               )}
+
+              <div className="pt-1 border-t border-zinc-800/50 space-y-1">
+                <p className="text-xs text-zinc-500 font-medium pt-2">Outreach is signed</p>
+                {household?.signOff ? (
+                  <p className="font-bold text-zinc-200 text-sm break-words">{household.signOff}</p>
+                ) : (
+                  <p className="text-sm text-amber-400/90">
+                    No names set — drafts will end without a signature rather than invent one.
+                  </p>
+                )}
+                <p className="text-xs text-zinc-500 leading-relaxed">
+                  Built from the names above, joined in your target language. Nothing to
+                  configure.
+                </p>
+              </div>
             </div>
 
             {/*
-              Work is personal and changes — a contract ends, a visa comes through.
-              It is edited on the same screen it was first asked on, so there is
-              one implementation of the questions rather than two that can drift.
+              The household's half of the tenant story, on the household's card —
+              the mirror of "Edit your profile" sitting under Account. Separate
+              rows because the saves are separate: yours writes your user row,
+              this one writes the shared profile a partner may be editing too.
             */}
-            <div className="p-4 sm:p-5 space-y-1.5 border-t border-zinc-800/60">
-              <p className="text-xs text-zinc-500 font-medium">Your work</p>
-              {(() => {
-                const occupation = me?.workProfile?.occupation?.trim();
-                return occupation ? (
-                  <p className="font-bold text-zinc-200 text-sm break-words">
-                    {stripAnnotations(occupation)}
-                  </p>
-                ) : (
-                  <p className="text-sm text-zinc-500">
-                    {me?.workProfile?.employmentStatus
-                      ? 'Answered, with no details added.'
-                      : 'Not answered yet.'}
-                  </p>
-                );
-              })()}
-              <p className="text-xs leading-relaxed text-zinc-500">
-                Yours alone. Messages for listings you entered are written in your voice; your
-                partner's are written in theirs.
-              </p>
-              <Link
-                href="/profile"
-                className="text-xs text-blue-400 hover:text-blue-300 font-bold cursor-pointer min-h-[44px] flex items-center"
-              >
-                Edit your profile
-              </Link>
-            </div>
-
-            {/* Derived outreach signature */}
-            <div className="p-4 sm:p-5 space-y-1.5">
-              <p className="text-xs text-zinc-500 font-medium">Outreach is signed</p>
-              {household?.signOff ? (
-                <p className="font-bold text-zinc-200 text-sm sm:text-base break-words">{household.signOff}</p>
-              ) : (
-                <p className="text-sm text-amber-400/90">
-                  No names set — drafts will end without a signature rather than invent one.
-                </p>
-              )}
-              <p className="text-xs text-zinc-500 leading-relaxed">
-                Built from everyone in the household, joined in your target language. Nothing
-                to configure — change a name above and the signature follows.
-              </p>
-            </div>
+            <Link href="/household">
+              <button className="w-full p-4 sm:p-5 flex items-center justify-between hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 shrink-0">
+                    <Home className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
+                      Edit household profile
+                    </p>
+                    <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
+                      Who is moving in, guarantees, documents, dates and pets. Shared, and
+                      written into both of your messages.
+                    </p>
+                  </div>
+                </div>
+              </button>
+            </Link>
 
             {/* Join code */}
             <div className="p-4 sm:p-5 space-y-3">
@@ -521,14 +655,55 @@ export default function SettingsView() {
               )}
             </div>
 
-            {/* Join another household */}
+            {/*
+              Leaving, which is what this is — a user belongs to exactly one
+              household, so joining another is a move rather than an addition.
+              It is the most consequential control on this screen and used to be
+              a grey button identical to "Rotate code" above it.
+
+              The two side effects were computed by the API, returned in the
+              response and rendered nowhere. If you are the member paying, your
+              key stays behind, and the first sign of it would have been AI
+              features quietly going offline for people you no longer share a
+              household with. It is now said before, and reported after.
+            */}
             <div className="p-4 sm:p-5 space-y-3">
+              {joinResult && (
+                <div className="text-xs text-emerald-300 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2.5 leading-relaxed space-y-1">
+                  <p className="font-bold">You are now in {household?.name?.trim() || 'the new household'}.</p>
+                  {joinResult.llmKeyCleared && (
+                    <p>
+                      Your Anthropic key did not come with you — the household you left has
+                      dropped to offline output rather than keep spending it.
+                    </p>
+                  )}
+                  {joinResult.abandonedHouseholdRemoved && (
+                    <p>
+                      Your old household had no criteria and no listings, so it was removed.
+                    </p>
+                  )}
+                  {!joinResult.llmKeyCleared && !joinResult.abandonedHouseholdRemoved && (
+                    <p>Your old household is untouched, and its code still works.</p>
+                  )}
+                </div>
+              )}
+
               {showJoin ? (
                 <>
                   <p className="text-xs text-zinc-400 leading-relaxed">
                     Entering another household&apos;s code moves this account into it. You will
-                    see their criteria and listings instead of your own.
+                    see their criteria and listings instead of your own, and the ones here stay
+                    behind with whoever is left.
                   </p>
+                  {payerIsMe && (
+                    <div className="flex items-start gap-2.5 text-xs text-amber-400/90 leading-relaxed">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <p>
+                        This household runs on your key. Leaving takes it with you, and everyone
+                        still here drops to offline output.
+                      </p>
+                    </div>
+                  )}
                   <input
                     type="text"
                     value={joinCode}
@@ -544,11 +719,25 @@ export default function SettingsView() {
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => joinMutation.mutate(joinCode)}
+                      onClick={() =>
+                        joinMutation.mutate(joinCode, {
+                          // Read here rather than off the mutation: joining clears
+                          // the whole query cache, and this is the only account of
+                          // what happened to the household being left.
+                          onSuccess: (result) => {
+                            setJoinResult({
+                              llmKeyCleared: result.llmKeyCleared,
+                              abandonedHouseholdRemoved: result.abandonedHouseholdRemoved,
+                            });
+                            setShowJoin(false);
+                            setJoinCode('');
+                          },
+                        })
+                      }
                       disabled={joinMutation.isPending || joinCode.trim().length === 0}
-                      className="flex-1 min-h-[44px] rounded-xl bg-blue-500 hover:bg-blue-600 text-white font-bold text-sm transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="flex-1 min-h-[44px] rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold text-sm transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      {joinMutation.isPending ? 'Joining...' : 'Join household'}
+                      {joinMutation.isPending ? 'Joining...' : 'Leave and join'}
                     </button>
                     <button
                       type="button"
@@ -566,11 +755,14 @@ export default function SettingsView() {
               ) : (
                 <button
                   type="button"
-                  onClick={() => setShowJoin(true)}
-                  className="w-full min-h-[44px] rounded-xl bg-zinc-800/70 hover:bg-zinc-800 text-zinc-300 font-bold text-sm border border-zinc-700/50 flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer"
+                  onClick={() => {
+                    setJoinResult(null);
+                    setShowJoin(true);
+                  }}
+                  className="w-full min-h-[44px] rounded-xl bg-zinc-900 hover:bg-amber-500/10 text-amber-400/90 hover:text-amber-300 font-bold text-sm border border-amber-500/20 hover:border-amber-500/40 flex items-center justify-center gap-2 transition-all active:scale-[0.98] cursor-pointer"
                 >
-                  <Home className="w-4 h-4" />
-                  <span>Join a different household</span>
+                  <LogOut className="w-4 h-4" />
+                  <span>Leave for a different household</span>
                 </button>
               )}
             </div>
@@ -948,53 +1140,6 @@ export default function SettingsView() {
                 </div>
               </button>
             </Link>
-
-            {/* The wizard covers criteria and both profiles in one pass. These
-                two go straight to the half you meant, in the order it asks for
-                them — and they are separate rows because the underlying saves
-                are separate: yours writes your user row, the household's writes
-                the one shared profile that a partner may be editing too. */}
-            <div className="border-t border-zinc-800/80">
-              <Link href="/profile">
-                <button className="w-full p-4 sm:p-5 flex items-center justify-between hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800">
-                  <div className="flex items-center gap-3.5">
-                    <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center border border-blue-500/20 shrink-0">
-                      <UserRound className="w-5 h-5 text-blue-400" />
-                    </div>
-                    <div>
-                      <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
-                        Edit your profile
-                      </p>
-                      <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
-                        Your job, contract, income and right to work. Yours alone — your partner
-                        answers it for themselves.
-                      </p>
-                    </div>
-                  </div>
-                </button>
-              </Link>
-            </div>
-
-            <div className="border-t border-zinc-800/80">
-              <Link href="/household">
-                <button className="w-full p-4 sm:p-5 flex items-center justify-between hover:bg-zinc-800/50 transition-colors group cursor-pointer text-left active:bg-zinc-800">
-                  <div className="flex items-center gap-3.5">
-                    <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 shrink-0">
-                      <Home className="w-5 h-5 text-emerald-400" />
-                    </div>
-                    <div>
-                      <p className="font-bold text-zinc-200 text-sm sm:text-base group-hover:text-white transition-colors">
-                        Edit household profile
-                      </p>
-                      <p className="text-xs text-zinc-500 mt-0.5 leading-relaxed">
-                        Who is moving in, guarantees, documents, dates and pets. Shared, and written
-                        into both of your messages.
-                      </p>
-                    </div>
-                  </div>
-                </button>
-              </Link>
-            </div>
 
             {/* Sits under the wizard because changing your criteria is exactly
                 when the stored scores stop matching them. */}

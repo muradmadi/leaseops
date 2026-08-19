@@ -218,6 +218,81 @@ describe('Avatar style', () => {
 });
 
 /**
+ * Renaming the household.
+ *
+ * The route has existed since the household was written and nothing in the web
+ * app called it, so a name left blank at signup — where the field is optional —
+ * was permanent. Now that Settings can reach it, these pin the two things the
+ * UI depends on: that the new name comes back on the household read, and that
+ * the response is still the stripped public shape rather than the row.
+ */
+describe('Renaming the household', () => {
+  it('stores the new name and reads it back', async () => {
+    const account = await createTestAccount('household_rename');
+    accounts.push(account);
+
+    const res = await app.fetch(
+      new Request('http://localhost/api/households/me', {
+        method: 'PATCH',
+        headers: authHeaders(account),
+        body: JSON.stringify({ name: '  The Madi household  ' }),
+      })
+    );
+    expect(res.status).toBe(200);
+
+    // Trimmed by the validator, so the stored name has no stray whitespace.
+    const body: any = await res.json();
+    expect(body.name).toBe('The Madi household');
+    expect(body).not.toHaveProperty('anthropicApiKey');
+
+    const household = await findHouseholdById(account.householdId);
+    expect(household?.name).toBe('The Madi household');
+  });
+
+  it('accepts a blank name rather than trapping the household in one', async () => {
+    const account = await createTestAccount('household_unname');
+    accounts.push(account);
+
+    const rename = (name: string) =>
+      app.fetch(
+        new Request('http://localhost/api/households/me', {
+          method: 'PATCH',
+          headers: authHeaders(account),
+          body: JSON.stringify({ name }),
+        })
+      );
+
+    await rename('Temporary');
+    const res = await rename('');
+    expect(res.status).toBe(200);
+
+    // Empty is the same state a household starts in when signup skipped the
+    // field — the UI renders "Unnamed household" for it, not a guessed name.
+    const household = await findHouseholdById(account.householdId);
+    expect(household?.name).toBe('');
+  });
+
+  it('renames only the caller\'s household', async () => {
+    const mine = await createTestAccount('household_scope_a');
+    const theirs = await createTestAccount('household_scope_b');
+    accounts.push(mine, theirs);
+
+    await app.fetch(
+      new Request('http://localhost/api/households/me', {
+        method: 'PATCH',
+        headers: authHeaders(mine),
+        // A body id must not be able to steer the write — the household comes
+        // from the session and nowhere else.
+        body: JSON.stringify({ name: 'Mine', id: theirs.householdId }),
+      })
+    );
+
+    expect((await findHouseholdById(mine.householdId))?.name).toBe('Mine');
+    expect((await findHouseholdById(theirs.householdId))?.name).not.toBe('Mine');
+  });
+});
+
+/**
  * The Anthropic key is the one secret on the `households` row, and it is the one
  * a route can leak by returning the row it already has in hand. These cover the
  * two ways that goes wrong: serialising the key, and billing it to the wrong
