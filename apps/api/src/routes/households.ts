@@ -72,11 +72,15 @@ const householdsRouter = new Hono<AuthEnv>()
    * it was optional there.
    */
   .patch('/me/member', zValidator('json', updateMeApiSchema), async (c) => {
-    const { displayName, gender, grammaticalForm } = c.req.valid('json');
+    const { displayName, gender, grammaticalForm, avatarStyle } = c.req.valid('json');
     const updated = await updateUserMember(c.get('user').id, {
       displayName,
       gender,
       grammaticalForm: gender === 'other' ? grammaticalForm : null,
+      // Omitted means "unchanged", not "clear it" — unlike the writing form,
+      // which is derived from gender and so must be wiped when gender moves off
+      // 'other'. Drizzle drops undefined keys from the SET clause.
+      avatarStyle,
     });
     if (!updated) {
       return c.json({ message: 'Account not found', statusCode: 404 }, 404);

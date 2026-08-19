@@ -156,6 +156,68 @@ describe('Member grammatical form', () => {
 });
 
 /**
+ * The monogram style: stored on the user, read back through the members list.
+ *
+ * Same failure mode as the gender columns — `findHouseholdMembers` not selecting
+ * it would leave every avatar on the id-derived fallback while the column held a
+ * choice, and nothing else in the suite would notice.
+ */
+describe('Avatar style', () => {
+  it('saves a style and returns it with the member', async () => {
+    const account = await createTestAccount('avatar_style');
+    accounts.push(account);
+
+    const res = await app.fetch(
+      new Request('http://localhost/api/households/me/member', {
+        method: 'PATCH',
+        headers: authHeaders(account),
+        body: JSON.stringify({ displayName: 'Murad', avatarStyle: 'violet' }),
+      })
+    );
+    expect(res.status).toBe(200);
+
+    const members = await findHouseholdMembers(account.householdId);
+    expect(members.find((m) => m.id === account.userId)?.avatarStyle).toBe('violet');
+  });
+
+  it('leaves the stored style alone when the payload omits it', async () => {
+    const account = await createTestAccount('avatar_keep');
+    accounts.push(account);
+
+    const patch = (body: Record<string, unknown>) =>
+      app.fetch(
+        new Request('http://localhost/api/households/me/member', {
+          method: 'PATCH',
+          headers: authHeaders(account),
+          body: JSON.stringify(body),
+        })
+      );
+
+    await patch({ displayName: 'Murad', avatarStyle: 'rose' });
+    // Editing the name is not a decision about the picture.
+    await patch({ displayName: 'Murad Madi' });
+
+    const user = await findUserById(account.userId);
+    expect(user?.avatarStyle).toBe('rose');
+    expect(user?.displayName).toBe('Murad Madi');
+  });
+
+  it('rejects a style outside the closed set', async () => {
+    const account = await createTestAccount('avatar_bad');
+    accounts.push(account);
+
+    const res = await app.fetch(
+      new Request('http://localhost/api/households/me/member', {
+        method: 'PATCH',
+        headers: authHeaders(account),
+        body: JSON.stringify({ displayName: 'Murad', avatarStyle: 'chartreuse' }),
+      })
+    );
+    expect(res.status).toBe(400);
+  });
+});
+
+/**
  * The Anthropic key is the one secret on the `households` row, and it is the one
  * a route can leak by returning the row it already has in hand. These cover the
  * two ways that goes wrong: serialising the key, and billing it to the wrong

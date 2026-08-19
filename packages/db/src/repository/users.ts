@@ -61,7 +61,7 @@ export async function updateUserHousehold(userId: string, householdId: string): 
  */
 export async function updateUserMember(
   userId: string,
-  data: Pick<NewUser, 'displayName' | 'gender' | 'grammaticalForm'>
+  data: Pick<NewUser, 'displayName' | 'gender' | 'grammaticalForm' | 'avatarStyle'>
 ): Promise<User | undefined> {
   const [updated] = await db
     .update(users)

@@ -15,6 +15,23 @@ export type Gender = (typeof GENDERS)[number];
 export type GrammaticalForm = (typeof GRAMMATICAL_FORMS)[number];
 
 /**
+ * The look of a member's monogram.
+ *
+ * LeaseOps stores no images: an avatar is the first letter of the display name
+ * over one of these treatments, so it costs a single short string and travels
+ * with the database file like everything else. Closed set for the same reason
+ * the gender enum is — the column, the Zod schema and the CSS all read from
+ * this list, so a style cannot be storable but unrenderable.
+ *
+ * Null means never chosen, and is resolved to a colour derived from the user id
+ * rather than to a fixed default: two members who have never opened Settings
+ * still get different monograms.
+ */
+export const AVATAR_STYLES = ['emerald', 'blue', 'violet', 'amber', 'rose', 'slate'] as const;
+
+export type AvatarStyle = (typeof AVATAR_STYLES)[number];
+
+/**
  * What the person does, as a landlord screens for it.
  *
  * Closed set, because every option a real applicant needs is here and a free
@@ -108,6 +125,15 @@ export const users = sqliteTable(
      * once and never again.
      */
     workProfile: text('work_profile', { mode: 'json' }).$type<WorkProfile>(),
+    /**
+     * Which monogram treatment this member picked, from `AVATAR_STYLES`.
+     *
+     * Nullable, and the null carries the same meaning as everywhere else here:
+     * never chosen. The client derives a colour from the user id in that case,
+     * so an account that has never opened Settings still looks like itself
+     * rather than like everybody else.
+     */
+    avatarStyle: text('avatar_style', { enum: AVATAR_STYLES }),
     householdId: text('household_id')
       .notNull()
       .references(() => households.id, { onDelete: 'cascade' }),

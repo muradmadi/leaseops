@@ -89,7 +89,14 @@ export async function findHouseholdMembers(
 ): Promise<
   Pick<
     User,
-    'id' | 'username' | 'displayName' | 'gender' | 'grammaticalForm' | 'workProfile' | 'createdAt'
+    | 'id'
+    | 'username'
+    | 'displayName'
+    | 'gender'
+    | 'grammaticalForm'
+    | 'avatarStyle'
+    | 'workProfile'
+    | 'createdAt'
   >[]
 > {
   return db
@@ -99,6 +106,7 @@ export async function findHouseholdMembers(
       displayName: users.displayName,
       gender: users.gender,
       grammaticalForm: users.grammaticalForm,
+      avatarStyle: users.avatarStyle,
       // Shared with the household on purpose: outreach names each member's work,
       // so both partners can see what the letter will say about them. There are
       // no per-member permissions in LeaseOps by design.

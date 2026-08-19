@@ -1,6 +1,13 @@
 import { createSelectSchema, createInsertSchema } from 'drizzle-zod';
 import { z } from 'zod';
-import { userSessions, users, GENDERS, GRAMMATICAL_FORMS, EMPLOYMENT_STATUSES } from '../schema';
+import {
+  userSessions,
+  users,
+  GENDERS,
+  GRAMMATICAL_FORMS,
+  EMPLOYMENT_STATUSES,
+  AVATAR_STYLES,
+} from '../schema';
 
 /**
  * Full select validation schema derived from the Drizzle user_sessions table.
@@ -48,6 +55,12 @@ export const genderSchema = z.enum(GENDERS).optional();
  * form is derived, so storing it would create two fields that can disagree.
  */
 export const grammaticalFormSchema = z.enum(GRAMMATICAL_FORMS).optional();
+
+/**
+ * The monogram treatment. Optional because omitting it means "leave my current
+ * one alone" — a member who edits their name has not thereby chosen a style.
+ */
+export const avatarStyleSchema = z.enum(AVATAR_STYLES).optional();
 
 /**
  * API payload validation schema for user login requests.
@@ -104,6 +117,7 @@ export const updateMeApiSchema = z.object({
   displayName: z.string().trim().max(80),
   gender: genderSchema,
   grammaticalForm: grammaticalFormSchema,
+  avatarStyle: avatarStyleSchema,
 });
 
 export type UpdateMeApiPayload = z.infer<typeof updateMeApiSchema>;

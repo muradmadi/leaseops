@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from './api';
 import type {
+  AvatarStyle,
   Gender,
   GrammaticalForm,
   AnthropicModelId,
@@ -15,6 +16,8 @@ export interface HouseholdMember {
   /** Null for accounts created before the question existed, or skipped. */
   gender: Gender | null;
   grammaticalForm: GrammaticalForm | null;
+  /** Null until the member picks one; the monogram derives a colour instead. */
+  avatarStyle: AvatarStyle | null;
   /**
    * This member's work. **Null means never asked**, which is what sends them to
    * the work screen; an object means they answered, even if every box is blank.
@@ -29,6 +32,8 @@ export interface MemberUpdate {
   displayName: string;
   gender?: Gender;
   grammaticalForm?: GrammaticalForm;
+  /** Omitted leaves the stored style alone rather than clearing it. */
+  avatarStyle?: AvatarStyle;
 }
 
 /**
